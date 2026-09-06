@@ -1,6 +1,22 @@
-node_modules/
+# Environment variables
 .env
 .env.*
-*.log
-dist/
+
+# Node modules
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Python virtual environments
+venv/
+.venv/
+
+# Uploaded documents
 uploads/
+
+# OS files
+.DS_Store

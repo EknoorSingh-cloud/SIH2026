@@ -1,64 +1,225 @@
 const db = require("../db");
 const { hashToken } = require("../services/crypto");
 
-// Answers "who is making this request".
-// It does NOT answer "are they allowed to" - that is policy.js.
+// ===============================================================
+// AUTHENTICATION MIDDLEWARE
+// ===============================================================
+//
+// This middleware checks:
+//
+// 1. Authorization header exists
+// 2. Bearer token is valid
+// 3. Session exists in database
+// 4. Session has not expired
+// 5. User account is active
+//
+// If everything is valid:
+// req.user contains user information
+// req.sessionId contains the session ID
+//
+// ===============================================================
+
 async function requireAuth(req, res, next) {
-    const header = req.get("authorization") || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
-
-    if (!token) {
-        return res
-            .status(401)
-            .json({ error: "unauthorized", message: "No session token provided." });
-    }
-
     try {
-        const { rows } = await db.query(
-            `SELECT s.id  AS session_id,
-              s.expires_at,
-              u.id, u.service_number, u.name, u.rank, u.station, u.is_active
-         FROM sessions s
-         JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = $1`,
-            [hashToken(token)]
+
+        // -------------------------------------------------------
+        // GET AUTHORIZATION HEADER
+        // -------------------------------------------------------
+
+        const authorizationHeader =
+            req.get("Authorization") || "";
+
+
+        // -------------------------------------------------------
+        // CHECK BEARER TOKEN FORMAT
+        //
+        // Expected:
+        //
+        // Authorization: Bearer abc123...
+        // -------------------------------------------------------
+
+        if (!authorizationHeader.startsWith("Bearer ")) {
+
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "No session token provided.",
+            });
+
+        }
+
+
+        // -------------------------------------------------------
+        // EXTRACT TOKEN
+        // -------------------------------------------------------
+
+        const token =
+            authorizationHeader.slice(7).trim();
+
+
+        if (!token) {
+
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "Invalid session token.",
+            });
+
+        }
+
+
+        // -------------------------------------------------------
+        // HASH TOKEN
+        //
+        // We never store raw session tokens in the database.
+        // -------------------------------------------------------
+
+        const tokenHash = hashToken(token);
+
+
+        // -------------------------------------------------------
+        // FIND SESSION + USER
+        // -------------------------------------------------------
+
+        const result = await db.query(
+
+            `
+            SELECT
+
+                s.id AS session_id,
+                s.expires_at,
+
+                u.id AS user_id,
+                u.service_number,
+                u.name,
+                u.rank,
+                u.station,
+                u.is_active
+
+            FROM sessions s
+
+            JOIN users u
+                ON u.id = s.user_id
+
+            WHERE s.token_hash = $1
+            `,
+
+            [tokenHash]
+
         );
 
-        const row = rows[0];
+
+        const row = result.rows[0];
+
+
+        // -------------------------------------------------------
+        // SESSION NOT FOUND
+        // -------------------------------------------------------
 
         if (!row) {
-            return res
-                .status(401)
-                .json({ error: "unauthorized", message: "Invalid session." });
+
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "Invalid session.",
+            });
+
         }
 
-        if (new Date(row.expires_at) < new Date()) {
-            // Clean up as we go rather than needing a scheduled job.
-            await db.query("DELETE FROM sessions WHERE id = $1", [row.session_id]);
-            return res
-                .status(401)
-                .json({ error: "unauthorized", message: "Session expired." });
+
+        // -------------------------------------------------------
+        // CHECK SESSION EXPIRATION
+        // -------------------------------------------------------
+
+        const expiresAt = new Date(row.expires_at);
+        const now = new Date();
+
+
+        if (expiresAt < now) {
+
+            // Delete expired session
+            await db.query(
+
+                `
+                DELETE FROM sessions
+                WHERE id = $1
+                `,
+
+                [row.session_id]
+
+            );
+
+
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "Session expired. Please sign in again.",
+            });
+
         }
+
+
+        // -------------------------------------------------------
+        // CHECK USER ACCOUNT
+        // -------------------------------------------------------
 
         if (!row.is_active) {
-            return res
-                .status(401)
-                .json({ error: "unauthorized", message: "Account is disabled." });
+
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "Account is disabled.",
+            });
+
         }
 
+
+        // -------------------------------------------------------
+        // ATTACH USER TO REQUEST
+        // -------------------------------------------------------
+
         req.user = {
-            id: row.id,
-            service_number: row.service_number,
-            name: row.name,
-            rank: row.rank,
-            station: row.station,
+
+            id: row.user_id,
+
+            service_number:
+                row.service_number,
+
+            name:
+                row.name,
+
+            rank:
+                row.rank,
+
+            station:
+                row.station,
+
         };
-        req.sessionId = row.session_id;
+
+
+        // -------------------------------------------------------
+        // ATTACH SESSION ID
+        // -------------------------------------------------------
+
+        req.sessionId =
+            row.session_id;
+
+
+        // -------------------------------------------------------
+        // CONTINUE TO NEXT ROUTE
+        // -------------------------------------------------------
 
         next();
-    } catch (err) {
-        next(err);
+
+
+    } catch (error) {
+
+        console.error(
+            "Authentication middleware error:",
+            error
+        );
+
+        next(error);
+
     }
 }
 
-module.exports = { requireAuth };
+
+module.exports = {
+    requireAuth,
+};
