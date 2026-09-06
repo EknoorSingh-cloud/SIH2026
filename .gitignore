@@ -1,5 +1,6 @@
-venv/
-__pycache__/
-*.pyc
-.vscode/
-.DS_Store
+node_modules/
+.env
+.env.*
+*.log
+dist/
+uploads/

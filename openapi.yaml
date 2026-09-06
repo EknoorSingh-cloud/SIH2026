@@ -1,0 +1,578 @@
+openapi: 3.0.3
+
+info:
+  title: Secure Legal DMS API
+  version: 0.1.0
+  description: >
+    Backend contract for the SIH 2026 secure document management system.
+    This file is the source of truth. Do not change an endpoint without
+    telling the whole team in writing.
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+
+tags:
+  - name: auth
+  - name: cases
+  - name: documents
+  - name: audit
+
+security:
+  - sessionToken: []
+
+paths:
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Step 1 of login. Returns an MFA challenge, not a session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_number, password]
+              properties:
+                service_number:
+                  type: string
+                  example: DL-SI-40219
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Credentials accepted, MFA code required
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mfa_token:
+                    type: string
+                    description: Short-lived token to pass to /auth/mfa/verify
+                  expires_in:
+                    type: integer
+                    example: 300
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/mfa/verify:
+    post:
+      tags: [auth]
+      summary: Step 2 of login. Exchanges a TOTP code for a session token.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mfa_token, code]
+              properties:
+                mfa_token:
+                  type: string
+                code:
+                  type: string
+                  pattern: '^[0-9]{6}$'
+                  example: "418203"
+      responses:
+        '200':
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke the current session immediately.
+      responses:
+        '204':
+          description: Session destroyed
+
+  /cases:
+    get:
+      tags: [cases]
+      summary: List cases the caller is assigned to.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Assigned cases only, never all cases
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Case'
+                  total:
+                    type: integer
+
+  /cases/{case_id}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [cases]
+      summary: Get one case.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /cases/{case_id}/documents:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [documents]
+      summary: List documents in a case.
+      parameters:
+        - name: doc_type
+          in: query
+          schema:
+            $ref: '#/components/schemas/DocType'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Document'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /documents:
+    post:
+      tags: [documents]
+      summary: Upload a new document. Creates version 1.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [case_id, title, file]
+              properties:
+                case_id:
+                  type: string
+                  format: uuid
+                title:
+                  type: string
+                doc_type:
+                  $ref: '#/components/schemas/DocType'
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: >
+            Stored and hashed. Ledger anchoring and OCR run asynchronously,
+            so anchor_status will usually be "pending" here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentVersion'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          description: File too large
+
+  /documents/{document_id}:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: Document metadata. Never returns file bytes.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Document'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /documents/{document_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: Download the decrypted file. Always writes an audit entry.
+      parameters:
+        - name: version
+          in: query
+          description: Defaults to the current version.
+          schema:
+            type: integer
+        - name: redacted
+          in: query
+          description: >
+            Forced to true regardless of this value when the case sensitivity
+            requires it. Redaction is applied to a copy; the stored original
+            is never modified.
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: File stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /documents/{document_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: Full version history. Nothing is ever overwritten or deleted.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DocumentVersion'
+    post:
+      tags: [documents]
+      summary: Upload a replacement file as a new version.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                change_note:
+                  type: string
+      responses:
+        '201':
+          description: New version created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentVersion'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /documents/{document_id}/verify:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    post:
+      tags: [documents]
+      summary: >
+        Recompute the stored file's hash and compare it to the ledger.
+        This is the tamper-detection demo.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version:
+                  type: integer
+      responses:
+        '200':
+          description: >
+            Returns 200 even when verification fails. A mismatch is a valid
+            answer, not an error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResult'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /documents/{document_id}/certificate:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: >
+        Generate the Part A certificate required under Section 63(4) of the
+        Bharatiya Sakshya Adhiniyam 2023.
+      responses:
+        '200':
+          description: PDF certificate
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '409':
+          description: Cannot issue a certificate for an unverified document
+
+  /documents/{document_id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [audit]
+      summary: Hash-linked event history for this document, oldest first.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chain_intact:
+                    type: boolean
+                    description: False if any entry has been altered or removed
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: bearer
+      description: Opaque session token from /auth/mfa/verify
+
+  parameters:
+    CaseId:
+      name: case_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      schema:
+        type: integer
+        default: 25
+        maximum: 100
+
+  schemas:
+
+    DocType:
+      type: string
+      enum: [fir, statement, forensic_report, charge_sheet, court_filing, notice, other]
+
+    Rank:
+      type: string
+      enum: [constable, head_constable, sub_inspector, inspector, dcp, prosecutor, judge, forensic_analyst]
+
+    Sensitivity:
+      type: string
+      description: >
+        "protected" triggers mandatory redaction on every export path,
+        for offences covered by Section 72 BNS.
+      enum: [normal, restricted, protected]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        service_number:
+          type: string
+        rank:
+          $ref: '#/components/schemas/Rank'
+        station:
+          type: string
+
+    Case:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_number:
+          type: string
+          example: FIR/0142/2026
+        title:
+          type: string
+        sensitivity:
+          $ref: '#/components/schemas/Sensitivity'
+        status:
+          type: string
+          enum: [open, under_investigation, charge_sheeted, closed]
+        created_at:
+          type: string
+          format: date-time
+
+    Document:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        case_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        doc_type:
+          $ref: '#/components/schemas/DocType'
+        current_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    DocumentVersion:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        version:
+          type: integer
+        sha256:
+          type: string
+          description: Hash of the original bytes, computed before encryption
+          example: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        size_bytes:
+          type: integer
+        uploaded_by:
+          $ref: '#/components/schemas/User'
+        uploaded_at:
+          type: string
+          format: date-time
+        anchor_status:
+          type: string
+          enum: [pending, anchored, failed]
+        ledger_tx_id:
+          type: string
+          nullable: true
+        ocr_status:
+          type: string
+          enum: [pending, done, failed]
+
+    VerificationResult:
+      type: object
+      properties:
+        verified:
+          type: boolean
+        version:
+          type: integer
+        stored_hash:
+          type: string
+          description: Hash recomputed from the file on disk right now
+        ledger_hash:
+          type: string
+          description: Hash recorded on the ledger at upload time
+        anchored_at:
+          type: string
+          format: date-time
+        signed_by:
+          $ref: '#/components/schemas/User'
+
+    AuditEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor:
+          $ref: '#/components/schemas/User'
+        action:
+          type: string
+          enum: [upload, view, download, export_redacted, new_version, verify, share, access_denied]
+        document_id:
+          type: string
+          format: uuid
+        occurred_at:
+          type: string
+          format: date-time
+        prev_hash:
+          type: string
+        entry_hash:
+          type: string
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          example: forbidden
+        message:
+          type: string
+          example: You are not assigned to this case.
+
+  responses:
+    Unauthorized:
+      description: Not logged in, or session expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: >
+        Logged in but not permitted. Always logged as access_denied.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: >
+        Returned instead of 403 where confirming existence would itself
+        leak information about a protected case.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
