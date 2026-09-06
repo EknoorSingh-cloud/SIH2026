@@ -1,6 +1,3 @@
-"""Run locally with:
-    uvicorn main:app --reload --port 8001
-"""
 import base64
 import hashlib
 import io
@@ -10,12 +7,13 @@ from preprocess import preprocess_pipeline
 from ocr import extract_text_with_boxes
 from classify import classify_document
 from redact import find_pii, redact_image
+from certificate import generate_bsa_63_certificate
 
 app = FastAPI(
     title="Document OCR, Redaction & Integrity Microservice",
-    description="Extracts text, hashes for Hyperledger anchoring (BSA Sec 63), "
-                "and enforces Section 72 BNS victim identity redaction.",
-    version="0.3.0",
+    description="Extracts text with Indic support, auto-tags BNS sections, redacts NER PII, "
+                "and produces BSA Sec 63 admissibility certificates.",
+    version="0.4.0",
 )
 
 app.add_middleware(
@@ -25,7 +23,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Markers for Section 72 BNS protection (Sexual offences / POCSO)
 SEXUAL_OFFENCE_MARKERS = [
     "pocso", "rape", "sexual", "376", "354", "section 64", "section 70", "outraging"
 ]
@@ -51,26 +48,27 @@ async def process_document(
         )
 
     image_bytes = await file.read()
-
-   
     sha256_hash = hashlib.sha256(image_bytes).hexdigest()
 
     try:
-        
         cleaned_image = preprocess_pipeline(image_bytes)
 
-        
-        ocr_result = extract_text_with_boxes(cleaned_image)
+        ocr_result = extract_text_with_boxes(cleaned_image, lang="eng+hin")
 
-        
         classification = classify_document(ocr_result["full_text"])
 
         full_text_lower = ocr_result["full_text"].lower()
         is_bns_protected = any(marker in full_text_lower for marker in SEXUAL_OFFENCE_MARKERS)
 
-       
         pii_findings = find_pii(ocr_result["full_text"])
         redacted_image = redact_image(cleaned_image, ocr_result["words"], pii_findings)
+
+        bsa_certificate = generate_bsa_63_certificate(
+            filename=file.filename,
+            sha256_hash=sha256_hash,
+            doc_type=classification["doc_type"],
+            ocr_confidence=ocr_result["avg_confidence"],
+        )
 
         buffer = io.BytesIO()
         redacted_image.save(buffer, format="PNG")
@@ -88,8 +86,12 @@ async def process_document(
         "filename": file.filename,
         "sha256_hash": sha256_hash,
         "document_type": classification["doc_type"],
+        "classification_score": classification["score"],
+        "auto_tagged_sections": classification["tagged_sections"],
         "extracted_text": ocr_result["full_text"],
+        "ocr_confidence": ocr_result["avg_confidence"],
         "bns_section_72_protected": is_bns_protected,
         "pii_detected": pii_findings,
         "redacted_image_base64": display_b64,
+        "bsa_63_certificate": bsa_certificate,
     }

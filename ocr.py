@@ -1,19 +1,19 @@
-# pyrefly: ignore [missing-import]
 import os
 import shutil
 import pytesseract
 from PIL import Image
 
-# Automatically use Windows path if running locally on Windows and not on PATH
 if os.name == "nt" and not shutil.which("tesseract"):
     default_win_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
     if os.path.exists(default_win_path):
         pytesseract.pytesseract.tesseract_cmd = default_win_path
-def extract_text(image: Image.Image, lang: str = "eng") -> str:
+
+
+def extract_text(image: Image.Image, lang: str = "eng+hin") -> str:
     return pytesseract.image_to_string(image, lang=lang)
 
 
-def extract_text_with_boxes(image: Image.Image, lang: str = "eng") -> dict:
+def extract_text_with_boxes(image: Image.Image, lang: str = "eng+hin") -> dict:
     raw = pytesseract.image_to_data(
         image, lang=lang, output_type=pytesseract.Output.DICT
     )
