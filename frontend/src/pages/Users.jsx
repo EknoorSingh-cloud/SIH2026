@@ -177,57 +177,66 @@ function Users() {
             </thead>
 
             <tbody>
-              {filteredUsers.map((user) => (
-                <tr key={user.id}>
-                  <td>
-                    <div className="user-profile">
-                      <div className="user-avatar">
-                        {user.name.charAt(0).toUpperCase()}
-                      </div>
+  {filteredUsers.length > 0 ? (
+    filteredUsers.map((user) => (
+      <tr key={user.id}>
+        <td>
+          <div className="user-profile">
+            <div className="user-avatar">
+              {user.name.charAt(0).toUpperCase()}
+            </div>
 
-                      <div>
-                        <h4>{user.name}</h4>
-                        <p>{user.email}</p>
-                      </div>
-                    </div>
-                  </td>
+            <div>
+              <h4>{user.name}</h4>
+              <p>{user.email}</p>
+            </div>
+          </div>
+        </td>
 
-                  {/* ROLE */}
-                  <td>
-                    <span
-                      className={`role-badge ${user.role.toLowerCase()}`}
-                    >
-                      {getRoleIcon(user.role)}
-                      {user.role}
-                    </span>
-                  </td>
+        <td>
+          <span
+            className={`role-badge ${user.role.toLowerCase()}`}
+          >
+            {getRoleIcon(user.role)}
+            {user.role}
+          </span>
+        </td>
 
-                  {/* STATUS */}
-                  <td>
-                    <span
-                      className={
-                        user.status === "Active"
-                          ? "status active-status"
-                          : "status inactive-status"
-                      }
-                    >
-                      {user.status}
-                    </span>
-                  </td>
+        <td>
+          <span
+            className={
+              user.status === "Active"
+                ? "status active-status"
+                : "status inactive-status"
+            }
+          >
+            {user.status}
+          </span>
+        </td>
 
-                  {/* DELETE BUTTON */}
-                  <td>
-                    <button
-                      className="delete-user-button"
-                      onClick={() => deleteUser(user)}
-                      title="Remove User"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+        <td>
+          <button
+            className="delete-user-button"
+            onClick={() => deleteUser(user)}
+            title="Remove User"
+          >
+            <Trash2 size={18} />
+          </button>
+        </td>
+      </tr>
+    ))
+  ) : (
+    <tr>
+      <td colSpan="4">
+        <div className="users-empty-state">
+          <UsersIcon size={45} />
+          <h3>No users found</h3>
+          <p>Try searching for another user.</p>
+        </div>
+      </td>
+    </tr>
+  )}
+</tbody>
           </table>
         </div>
 

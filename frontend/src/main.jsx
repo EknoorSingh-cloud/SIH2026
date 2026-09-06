@@ -2,12 +2,15 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
+import { DocumentProvider } from "./context/DocumentContext";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
-      <App />
+      <DocumentProvider>
+        <App />
+      </DocumentProvider>
     </BrowserRouter>
   </React.StrictMode>
 );
