@@ -208,6 +208,81 @@
     color: var(--warn);
 }
 
+.status-processing {
+    color: var(--accent);
+}
+
+.status-done {
+    color: var(--ok);
+}
+
+/* ---- OCR output and extracted entities ---- */
+
+.alert-warn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--warn-bg);
+    color: var(--warn);
+    border: 1px solid #f0dcae;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    margin: 12px 0;
+}
+
+.entity-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 14px 0;
+}
+
+.entity-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.entity-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    min-width: 78px;
+}
+
+.chip {
+    background: #eef2fa;
+    color: #23385f;
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+}
+
+/* Identifying entities are only ever returned for a non-protected
+   case. Marked so nobody mistakes them for safe-to-share metadata. */
+.chip-identifying {
+    background: var(--bad-bg);
+    color: var(--bad);
+}
+
+.ocr-text {
+    background: #fafbfd;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    margin: 12px 0;
+}
+
 .empty-state {
     background: #fff;
     border: 1px dashed var(--line);

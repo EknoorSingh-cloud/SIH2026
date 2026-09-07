@@ -12,6 +12,7 @@ cd backend
 psql -U postgres -d sih_dms -f db/schema.sql
 psql -U postgres -d sih_dms -f db/migrations/001_search_audit_action.sql
 psql -U postgres -d sih_dms -f db/migrations/002_redaction.sql
+psql -U postgres -d sih_dms -f db/migrations/003_ocr_processing.sql
 ```
 
 `schema.sql` already contains everything in the migrations, so a fresh
@@ -40,19 +41,60 @@ CORS_ORIGIN=http://localhost:5173
 # fabric = the real ledger, see fabric/README.md
 LEDGER_BACKEND=stub
 
-# Leave false until you have looked at real redacted output.
+# Leave false until you have looked at real redacted output yourself.
+# Verified working for text/*; images and PDFs refuse either way.
 REDACTION_ENABLED=false
+
+# disk = local filesystem (default), minio = S3 WORM object store
+STORAGE_BACKEND=disk
+
+# Only read when STORAGE_BACKEND=minio
+# MINIO_ENDPOINT=http://localhost:9000
+# MINIO_ACCESS_KEY=minioadmin
+# MINIO_SECRET_KEY=minioadmin
+# MINIO_BUCKET=nyayakosh
+
+# OCR languages. Only add one you have run a sample through.
+OCR_LANGS=eng+hin
 ```
 
 ```bash
 cd backend
 npm install
-npm test        # 32 checks, no database needed
+npm test        # 39 checks, no database or server needed
 npm run dev
 ```
 
-The startup log prints which ledger backend is live. Check it before
-demoing.
+The startup log prints which ledger backend is live and whether
+redaction is on. Check both before demoing.
+
+## 2b. OCR worker
+
+Text recognition runs in a separate process so an upload returns
+immediately instead of waiting seconds for OCR:
+
+```bash
+cd backend
+npm run worker
+```
+
+It polls for `ocr_status='pending'`, decrypts through the storage layer
+**in memory only**, recognises the text, extracts entities, and writes
+`extracted_text` + `entities` back. Without it running, uploads stay
+`pending` and search finds nothing.
+
+First run downloads ~15MB of Tesseract language data per language.
+
+## 2c. Object storage (optional)
+
+```bash
+docker run -p 9000:9000 -p 9001:9001 minio/minio server /data --console-address :9001
+cd backend && npm run init:minio      # creates the bucket WITH Object Lock
+```
+
+Then set `STORAGE_BACKEND=minio`. Object Lock must be enabled at bucket
+creation — it cannot be added later, so a bucket made by hand without it
+has to be recreated.
 
 ## 3. Frontend
 
@@ -104,13 +146,15 @@ valid login, still nothing.
 | Versioning, integrity verification | Real |
 | BSA S.63 certificate | Real |
 | Export watermarking | Real, PDF only, visible (not steganographic) |
-| Search | Real, but returns nothing until OCR populates `extracted_text` |
+| Search | Real, full-text over OCR output |
+| OCR | Real. Tesseract WASM, **English and Hindi tested — do not claim 22 languages** |
+| Entity extraction | Real, **rules and document structure, not an NER model** |
+| Object storage | Real MinIO WORM path; **runs on local disk unless `STORAGE_BACKEND=minio`** |
 | Ledger | Real chaincode; **runs on the in-memory stub unless `LEDGER_BACKEND=fabric`** |
 | Redaction | Real for `text/*`; **refuses PDFs and images rather than half-redacting** |
 | ICJS | **Mock.** Fixtures. Every response says `"mock": true` |
 | DSC / eSign | **Stub.** Correct interface, throwaway ECDSA key, not a legal signature |
-| OCR (F3), entity extraction (F4) | **Not built** |
-| MinIO (F6), PWA (F12) | **Not built.** Storage is local disk |
+| PWA (F12) | **Not built** |
 
 Say these out loud when demonstrating. Every one of them is defensible
 as an engineering decision; none of them survives being oversold.
@@ -123,8 +167,19 @@ as an engineering decision; none of them survives being oversold.
   classic failure, and a judge will test it by copy-pasting. Images need
   per-entity bounding boxes that OCR does not yet emit. Both refuse with
   503 rather than release something half-redacted.
-- **Search needs F3.** The index and the query are in place; there is
-  simply no OCR text to match yet.
+- **OCR is tested on English and Hindi only.** Adding a scheduled
+  language is a traineddata file and an `OCR_LANGS` change, but claiming
+  a language nobody has run a sample through is how a demo falls apart
+  in front of someone who speaks it.
+- **Entity extraction has no model in it.** It is regex plus the
+  formulaic structure of an FIR ("complainant X", "d/o Y", "r/o Z").
+  That is auditable — you can show a judge the rule that fired — but it
+  will miss a name introduced in an unusual phrasing. Redaction treats
+  it as a safety net beneath the identities an officer registers, never
+  as the only source.
+- **Search snippets are never shown for a protected case**, regardless
+  of the redaction flag. `ts_headline` cuts fragments through names, so
+  a fragment-level redactor could leave half an identity behind.
 - **Anchoring is fire-and-forget.** A ledger outage marks the version
   `anchor_status='failed'` instead of failing the upload, and nothing
   retries it yet.

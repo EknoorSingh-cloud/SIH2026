@@ -49,7 +49,7 @@ CREATE TYPE doc_type_t AS ENUM (
 );
 
 CREATE TYPE anchor_status_t AS ENUM ('pending', 'anchored', 'failed');
-CREATE TYPE ocr_status_t    AS ENUM ('pending', 'done', 'failed');
+CREATE TYPE ocr_status_t    AS ENUM ('pending', 'processing', 'done', 'failed');
 
 CREATE TYPE audit_action_t AS ENUM (
   'upload',

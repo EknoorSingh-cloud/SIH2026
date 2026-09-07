@@ -347,6 +347,85 @@ test("redaction: tolerates entities being absent entirely", () => {
     );
 });
 
+test("entities: contextual layer names the complainant and her relations", () => {
+    const found = entitiesSvc.contextualIdentities(STATEMENT);
+
+    assert.ok(
+        found.persons.some((p) => p.includes("Sunita Sharma")),
+        `complainant not found, got ${JSON.stringify(found.persons)}`
+    );
+    assert.ok(
+        found.persons.some((p) => p.includes("Ramesh Sharma")),
+        `parent not found, got ${JSON.stringify(found.persons)}`
+    );
+});
+
+test("entities: contextual layer reads s/o d/o w/o abbreviations", () => {
+    const found = entitiesSvc.contextualIdentities(
+        "Statement of Meena Devi w/o Suresh Kumar r/o 22 Gandhi Marg."
+    );
+
+    assert.ok(found.persons.some((p) => p.includes("Suresh Kumar")));
+    assert.ok(found.addresses.some((a) => a.includes("Gandhi Marg")));
+});
+
+test("entities: contextual layer handles Devanagari names", () => {
+    const found = entitiesSvc.contextualIdentities("complainant सुनीता शर्मा aged 24");
+    assert.ok(
+        found.persons.some((p) => p.includes("सुनीता")),
+        `expected a Devanagari name, got ${JSON.stringify(found.persons)}`
+    );
+});
+
+test("entities: role words alone are not mistaken for a name", () => {
+    const found = entitiesSvc.contextualIdentities("The complainant said the accused fled.");
+    assert.ok(
+        !found.persons.some((p) => /^(the|said|accused)$/i.test(p)),
+        `stop words captured as a name: ${JSON.stringify(found.persons)}`
+    );
+});
+
+test("entities: contextual output feeds redaction directly", () => {
+    // F3 -> F4 -> F5. Whatever the rules find must be a usable target.
+    const targets = redaction.targetsFrom({
+        extracted: entitiesSvc.extract(STATEMENT),
+    });
+    const { buffer } = redaction.redact(Buffer.from(STATEMENT), "text/plain", targets);
+
+    assert.ok(
+        !buffer.toString().includes("Sunita Sharma"),
+        "victim name survived redaction driven by extracted entities alone"
+    );
+});
+
+test("entities: FIR numbers in longhand as well as slashed form", () => {
+    // "FIR No. 142 of 2026" is what station registers and OCR'd scans
+    // actually produce; only matching FIR/0142/2026 misses most of them.
+    for (const form of [
+        "FIR/0142/2026",
+        "FIR 0142 of 2026",
+        "FIR No. 142 of 2026",
+        "FIR No 142/2026",
+    ]) {
+        const found = entitiesSvc.extract(`Recorded under ${form} at the station.`);
+        assert.ok(
+            found.fir_numbers.length > 0,
+            `no FIR number found in ${JSON.stringify(form)}`
+        );
+    }
+});
+
+test("entities: a longhand FIR number is preserved through redaction", () => {
+    const text = "FIR 0142 of 2026. Complainant Sunita Sharma, phone 9876543210.";
+    const { buffer } = redaction.redact(Buffer.from(text), "text/plain", [
+        "Sunita Sharma",
+    ]);
+    const out = buffer.toString();
+
+    assert.ok(out.includes("FIR 0142 of 2026"), "longhand FIR number was redacted");
+    assert.ok(!out.includes("Sunita Sharma"), "victim name survived");
+});
+
 test("entities: rules layer finds the structured fields", () => {
     const found = entitiesSvc.extract(STATEMENT);
 

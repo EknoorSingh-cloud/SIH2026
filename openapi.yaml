@@ -429,6 +429,46 @@ paths:
         '409':
           description: Cannot issue a certificate for an unverified document
 
+  /documents/{document_id}/text:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: >
+        OCR output and the entities extracted from it. On a protected
+        case the text is redacted and the identifying entity lists
+        (persons, addresses, phones) are not returned at all; when
+        redaction is unavailable this refuses with 503 rather than
+        releasing the text.
+      parameters:
+        - name: version
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                  ocr_status:
+                    type: string
+                    enum: [pending, processing, done, failed]
+                  redacted:
+                    type: boolean
+                  text:
+                    type: string
+                  entities:
+                    $ref: '#/components/schemas/Entities'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Protected case and redaction is unavailable
+
   /documents/{document_id}/custody:
     parameters:
       - $ref: '#/components/parameters/DocumentId'
@@ -618,6 +658,48 @@ components:
         "protected" triggers mandatory redaction on every export path,
         for offences covered by Section 72 BNS.
       enum: [normal, restricted, protected]
+
+    Entities:
+      type: object
+      description: >
+        Output of the entity rules (F4). The identifying lists feed
+        redaction; the evidentiary ones are preserved through it and are
+        the only ones returned for a protected case.
+      properties:
+        persons:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        addresses:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        phones:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        fir_numbers:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        sections:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        dates:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        confidence:
+          type: number
+          nullable: true
+          description: OCR confidence, 0-100.
 
     ProtectedIdentity:
       type: object

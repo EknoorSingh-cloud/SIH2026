@@ -178,13 +178,17 @@ router.get("/search", requireAuth, async (req, res, next) => {
         const page = Math.max(1, parseInt(req.query.page, 10) || 1);
         const perPage = Math.min(100, parseInt(req.query.per_page, 10) || 25);
 
-        // Snippets are withheld on protected cases until redaction is
-        // live. The extracted text of an S.72 document contains exactly
-        // the victim identity that redaction exists to strip, and a
-        // search result is an export path like any other. The hit still
-        // shows - the reader is assigned to the case - but the text does
-        // not. Same reasoning as the 503 on /content.
-        const snippetsAllowed = process.env.REDACTION_ENABLED === "true";
+        // Snippets are ALWAYS withheld on a protected case. Not gated on
+        // REDACTION_ENABLED - that flag says redaction is available, and
+        // this path does not run it. An earlier version tied the two
+        // together, which meant turning redaction ON turned this
+        // protection OFF and served the victim's name in the results.
+        //
+        // Redacting the fragment instead would not be safe either:
+        // ts_headline cuts through names ("...Sharma daughter of...") so
+        // a partial identity can survive a whole-word redactor. The hit
+        // still shows - the reader is assigned to the case - but the
+        // text does not.
 
         // to_tsvector(...) here matches the expression on the GIN index
         // in schema.sql exactly. Change one and you must change both or
@@ -194,7 +198,7 @@ router.get("/search", requireAuth, async (req, res, next) => {
                     c.id AS case_id, c.case_number, c.sensitivity,
                     v.version, v.uploaded_at,
                     CASE
-                      WHEN c.sensitivity = 'protected' AND NOT $3 THEN NULL
+                      WHEN c.sensitivity = 'protected' THEN NULL
                       ELSE ts_headline('simple', v.extracted_text,
                                        plainto_tsquery('simple', $2),
                                        'MaxFragments=2,MaxWords=18,MinWords=5')
@@ -208,8 +212,8 @@ router.get("/search", requireAuth, async (req, res, next) => {
               WHERE to_tsvector('simple', coalesce(v.extracted_text, ''))
                     @@ plainto_tsquery('simple', $2)
               ORDER BY v.uploaded_at DESC
-              LIMIT $4 OFFSET $5`,
-            [req.user.id, q, snippetsAllowed, perPage, (page - 1) * perPage]
+              LIMIT $3 OFFSET $4`,
+            [req.user.id, q, perPage, (page - 1) * perPage]
         );
 
         const total = rows[0] ? Number(rows[0].total_count) : 0;
@@ -725,6 +729,108 @@ router.get(
             );
 
             return res.send(pdf);
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
+// ---------------------------------------------------------------
+// GET /documents/:document_id/text
+//
+// The OCR output and the entities extracted from it.
+//
+// This is an export path like any other, and a careless one would be
+// the worst of the lot: on a protected case, extracted_text IS the
+// victim's statement in full, and entities.persons is literally a list
+// of the names redaction exists to remove. So the same rules apply as
+// /content - refuse when redaction is unavailable, redact when it is,
+// and never return the identifying entity lists for a protected case.
+// ---------------------------------------------------------------
+router.get(
+    "/:document_id/text",
+    requireAuth,
+    requirePermission("document.view", caseIdForDocument),
+    async (req, res, next) => {
+        try {
+            const version = req.query.version
+                ? parseInt(req.query.version, 10)
+                : null;
+
+            const { rows } = await db.query(
+                `SELECT v.id, v.version, v.ocr_status, v.extracted_text, v.entities,
+                        d.case_id, c.sensitivity
+                   FROM document_versions v
+                   JOIN documents d ON d.id = v.document_id
+                   JOIN cases c ON c.id = d.case_id
+                  WHERE v.document_id = $1
+                    AND v.version = COALESCE($2, d.current_version)`,
+                [req.params.document_id, version]
+            );
+
+            const row = rows[0];
+            if (!row) {
+                return res
+                    .status(404)
+                    .json({ error: "not_found", message: "Not found." });
+            }
+
+            const protectedCase = row.sensitivity === "protected";
+
+            if (protectedCase && process.env.REDACTION_ENABLED !== "true") {
+                return res.status(503).json({
+                    error: "redaction_unavailable",
+                    message:
+                        "This case requires redaction before release and the redaction service is not available.",
+                });
+            }
+
+            let text = row.extracted_text || "";
+            let redactedCount = null;
+
+            // Only the evidentiary half of the entity set leaves the
+            // server for a protected case. persons, addresses and phones
+            // stay in the database.
+            let entitiesOut = row.entities || null;
+
+            if (protectedCase && entitiesOut) {
+                const { fir_numbers, sections, dates, confidence } = entitiesOut;
+                entitiesOut = { fir_numbers, sections, dates, confidence };
+            }
+
+            if (protectedCase && text) {
+                const { rows: identities } = await db.query(
+                    "SELECT value FROM case_protected_identities WHERE case_id = $1",
+                    [row.case_id]
+                );
+
+                const result = redaction.redact(
+                    Buffer.from(text, "utf8"),
+                    "text/plain",
+                    redaction.targetsFrom({ identities, extracted: row.entities })
+                );
+                text = result.buffer.toString("utf8");
+                redactedCount = result.removed;
+            }
+
+            await audit.append({
+                userId: req.user.id,
+                action: protectedCase ? "export_redacted" : "view",
+                documentId: req.params.document_id,
+                caseId: row.case_id,
+                version: row.version,
+                detail:
+                    redactedCount === null ? null : { entities_removed: redactedCount },
+                ip: req.ip,
+            });
+
+            return res.json({
+                version: row.version,
+                ocr_status: row.ocr_status,
+                redacted: protectedCase,
+                text,
+                entities: entitiesOut,
+            });
         } catch (err) {
             next(err);
         }

@@ -107,6 +107,11 @@ export default function Layout({ children }) {
                             clear
                         </button>
                     )}
+                    {/* An explicit submit button. Without one, pressing
+                        Enter in the box does not reliably submit. */}
+                    <button type="submit" className="btn btn-small" disabled={!q.trim()}>
+                        Search
+                    </button>
                 </form>
 
                 {results ? (

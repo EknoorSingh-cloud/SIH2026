@@ -28,7 +28,12 @@ const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 // ---- evidentiary, must be preserved ----
 
-const FIR_NUMBER = /\b(?:FIR[\/\s-]?)?\d{1,5}\/\d{4}\b/gi;
+// Two forms, both common and both seen on real paperwork:
+//   FIR/0142/2026          the slashed form
+//   FIR No. 142 of 2026    the longhand form, which is what most
+//                          station registers and OCR'd scans produce
+const FIR_NUMBER =
+    /\bFIR\s*(?:No\.?|Number)?\s*\d{1,5}\s*(?:of|\/|-)\s*\d{4}\b|\b(?:FIR[\/\s-]?)?\d{1,5}\/\d{4}\b/gi;
 
 // BNS / BNSS / BSA / IPC / CrPC references, and bare "Section 115(2)".
 const SECTION =
@@ -36,6 +41,29 @@ const SECTION =
 
 const DATE =
     /\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b|\b\d{4}-\d{2}-\d{2}\b/g;
+
+// ---- contextual identity patterns (the F4 layer that is not a model) ----
+//
+// No NER model here, and that is a deliberate trade rather than a
+// shortcut. FIRs and statements are formulaic: the victim is introduced
+// by a role word or a relationship abbreviation, almost always in the
+// same handful of shapes. Matching those shapes is auditable - you can
+// show a judge the rule that fired - where a model's answer is not.
+//
+// A name is one to four capitalised words, or a run of Devanagari.
+const NAME = "((?:[A-Z][\\p{L}]+[ \\t]+){0,3}[A-Z][\\p{L}]+|[\\p{Script=Devanagari}]+(?:[ \\t]+[\\p{Script=Devanagari}]+){0,3})";
+
+const ROLE_NAME = new RegExp(
+    `\\b(?:complainant|victim|informant|prosecutrix|deceased)\\s*[:\\-]?\\s*${NAME}`,
+    "giu"
+);
+
+const RELATION_NAME = new RegExp(
+    `\\b(?:s\\/o|d\\/o|w\\/o|c\\/o|son of|daughter of|wife of|husband of|father of|mother of)\\s*[:\\-]?\\s*${NAME}`,
+    "giu"
+);
+
+const ADDRESS = /\b(?:r\/o|resident of|residing at|address)\s*[:\-]?\s*([^\n.;]{4,70})/giu;
 
 function matchAll(text, re) {
     // Fresh lastIndex each time - these are module-level /g regexes and
@@ -52,6 +80,55 @@ function matchAll(text, re) {
 
 const uniq = (spans) => [...new Set(spans.map((s) => s.value))];
 
+// Capture group 1 rather than the whole match: we want the name, not
+// the role word that introduced it.
+function captureAll(text, re) {
+    const out = [];
+    const rx = new RegExp(re.source, re.flags);
+    let m;
+    while ((m = rx.exec(text)) !== null) {
+        const value = (m[1] || "").trim().replace(/\s+/g, " ");
+        if (value.length > 1) out.push(value);
+        if (m.index === rx.lastIndex) rx.lastIndex++;
+    }
+    return [...new Set(out)];
+}
+
+// Role words that get captured as if they were names when two of them
+// sit next to each other ("Complainant Victim Sunita").
+const NOT_A_NAME = new Set([
+    "the", "and", "said", "above", "named", "aforesaid",
+    "complainant", "victim", "informant", "accused", "police", "station",
+    "inspector", "sub", "constable", "head", "section", "fir",
+]);
+
+function looksLikeName(value) {
+    const words = value.split(/\s+/);
+    if (words.length > 4) return false;
+    // Reject if every word is a stop word - a real name has at least one
+    // token that is not vocabulary.
+    return words.some((w) => !NOT_A_NAME.has(w.toLowerCase()));
+}
+
+/**
+ * Identities named by the structure of the document rather than found
+ * by a model. Feeds redaction as a safety net beneath the identities an
+ * officer registered explicitly - it is additive, never the only source.
+ */
+function contextualIdentities(text) {
+    const src = String(text || "");
+
+    const persons = [
+        ...captureAll(src, ROLE_NAME),
+        ...captureAll(src, RELATION_NAME),
+    ].filter(looksLikeName);
+
+    return {
+        persons: [...new Set(persons)],
+        addresses: captureAll(src, ADDRESS),
+    };
+}
+
 /**
  * Pull every rules-detectable entity out of a block of text.
  * Returns the shape described in migration 002 so F4's model layer can
@@ -59,15 +136,22 @@ const uniq = (spans) => [...new Set(spans.map((s) => s.value))];
  */
 function extract(text) {
     const src = String(text || "");
+    const contextual = contextualIdentities(src);
 
     return {
+        // identifying - these feed redaction
+        persons: contextual.persons,
+        addresses: contextual.addresses,
         phones: uniq(matchAll(src, PHONE)),
         emails: uniq(matchAll(src, EMAIL)),
         aadhaar: uniq(matchAll(src, AADHAAR)),
 
+        // evidentiary - these are kept, never redacted
         fir_numbers: uniq(matchAll(src, FIR_NUMBER)),
         sections: uniq(matchAll(src, SECTION)),
         dates: uniq(matchAll(src, DATE)),
+
+        extracted_by: "rules",
     };
 }
 
@@ -91,8 +175,9 @@ function preservedSpans(text) {
 
 module.exports = {
     extract,
+    contextualIdentities,
     identifyingSpans,
     preservedSpans,
     matchAll,
-    patterns: { PHONE, AADHAAR, EMAIL, FIR_NUMBER, SECTION, DATE },
+    patterns: { PHONE, AADHAAR, EMAIL, FIR_NUMBER, SECTION, DATE, ROLE_NAME, RELATION_NAME, ADDRESS },
 };

@@ -47,13 +47,79 @@ function unwrapKey(wrapped) {
     return Buffer.concat([decipher.update(enc), decipher.final()]);
 }
 
+// ---------------------------------------------------------------
+// Object store. Two functions, because disk was only ever touched in
+// two places - one write in store(), one read in retrieve().
+//
+//   STORAGE_BACKEND=disk    local filesystem (default)
+//   STORAGE_BACKEND=minio   S3-compatible WORM object store
+//
+// Disk stays the default so the system runs with nothing else
+// installed. Nothing above these two functions changes between them,
+// and the ciphertext written is byte-identical either way - the
+// encryption happens before we get here.
+// ---------------------------------------------------------------
+
+const BACKEND = (process.env.STORAGE_BACKEND || "disk").toLowerCase();
+const BUCKET = process.env.MINIO_BUCKET || "nyayakosh";
+
+let s3 = null;
+
+function client() {
+    if (s3) return s3;
+
+    const { S3Client } = require("@aws-sdk/client-s3");
+
+    s3 = new S3Client({
+        endpoint: process.env.MINIO_ENDPOINT || "http://localhost:9000",
+        region: process.env.MINIO_REGION || "us-east-1",
+        // MinIO serves buckets on a path, not a subdomain.
+        forcePathStyle: true,
+        credentials: {
+            accessKeyId: process.env.MINIO_ACCESS_KEY || "minioadmin",
+            secretAccessKey: process.env.MINIO_SECRET_KEY || "minioadmin",
+        },
+    });
+    return s3;
+}
+
+async function putObject(name, bytes) {
+    if (BACKEND !== "minio") {
+        await fs.mkdir(BLOB_DIR, { recursive: true });
+        return fs.writeFile(path.join(BLOB_DIR, name), bytes);
+    }
+
+    const { PutObjectCommand } = require("@aws-sdk/client-s3");
+    await client().send(
+        new PutObjectCommand({
+            Bucket: BUCKET,
+            Key: name,
+            Body: bytes,
+            ContentType: "application/octet-stream",
+        })
+    );
+}
+
+async function getObject(name) {
+    if (BACKEND !== "minio") {
+        return fs.readFile(path.join(BLOB_DIR, name));
+    }
+
+    const { GetObjectCommand } = require("@aws-sdk/client-s3");
+    const res = await client().send(
+        new GetObjectCommand({ Bucket: BUCKET, Key: name })
+    );
+
+    const chunks = [];
+    for await (const chunk of res.Body) chunks.push(chunk);
+    return Buffer.concat(chunks);
+}
+
 /**
- * Encrypt a buffer and write it to disk.
+ * Encrypt a buffer and write it to the object store.
  * Returns everything the database row needs.
  */
 async function store(plaintext) {
-    await fs.mkdir(BLOB_DIR, { recursive: true });
-
     // Hash the ORIGINAL bytes, before encryption. This is what gets
     // anchored and what verification recomputes.
     const sha256 = crypto.createHash("sha256").update(plaintext).digest("hex");
@@ -65,7 +131,7 @@ async function store(plaintext) {
     const authTag = cipher.getAuthTag();
 
     const name = `${crypto.randomUUID()}.enc`;
-    await fs.writeFile(path.join(BLOB_DIR, name), ciphertext);
+    await putObject(name, ciphertext);
 
     return {
         sha256,
@@ -79,11 +145,11 @@ async function store(plaintext) {
 
 /**
  * Read and decrypt.
- * Throws if the blob has been altered on disk - GCM will not return
+ * Throws if the blob has been altered in storage - GCM will not return
  * data that fails its authentication tag.
  */
 async function retrieve(row) {
-    const ciphertext = await fs.readFile(path.join(BLOB_DIR, row.storage_path));
+    const ciphertext = await getObject(row.storage_path);
 
     const dek = unwrapKey(row.wrapped_key);
     const decipher = crypto.createDecipheriv("aes-256-gcm", dek, row.iv);
@@ -98,4 +164,4 @@ function shredPayload() {
     return crypto.randomBytes(60);
 }
 
-module.exports = { store, retrieve, shredPayload, BLOB_DIR };
+module.exports = { store, retrieve, shredPayload, BLOB_DIR, BACKEND, BUCKET };

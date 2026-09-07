@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Download, FileCheck, History, ShieldCheck, Link2 } from "lucide-react";
 
 import * as api from "../api/client";
+import ExtractedText from "../components/ExtractedText";
 
 // ---------------------------------------------------------------
 // Screen 4: metadata, version history, and the ways out of here -
@@ -122,6 +123,15 @@ export default function DocumentView() {
                 </Link>
             </div>
 
+            <ExtractedText
+                documentId={documentId}
+                ocrStatus={
+                    versions.length
+                        ? versions[versions.length - 1].ocr_status
+                        : "pending"
+                }
+            />
+
             <section className="panel">
                 <h2>Version history</h2>
                 <p className="muted">
@@ -137,6 +147,7 @@ export default function DocumentView() {
                         <th>Uploaded by</th>
                         <th>When</th>
                         <th>Ledger</th>
+                        <th>OCR</th>
                     </tr>
                     </thead>
                     <tbody>
@@ -163,6 +174,11 @@ export default function DocumentView() {
                                         <Link2 size={11} /> {v.ledger_tx_id.slice(0, 10)}...
                                     </code>
                                 )}
+                            </td>
+                            <td>
+                                <span className={`status status-${v.ocr_status}`}>
+                                    {v.ocr_status}
+                                </span>
                             </td>
                         </tr>
                     ))}

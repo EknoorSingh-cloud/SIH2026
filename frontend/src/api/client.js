@@ -172,6 +172,13 @@ export const verifyDocument = (documentId, version) =>
 
 export const getAudit = (documentId) => request(`/documents/${documentId}/audit`);
 
+// OCR output and the entities extracted from it. Redacted server-side
+// on a protected case, and 503s there when redaction is unavailable.
+export const getText = (documentId, version) =>
+    request(
+        `/documents/${documentId}/text${version ? `?version=${version}` : ""}`
+    );
+
 export const getCustody = (documentId) =>
     request(`/documents/${documentId}/custody`);
 
