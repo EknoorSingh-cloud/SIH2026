@@ -11,8 +11,13 @@
 //   VITE_API_URL=http://127.0.0.1:4010 npm run dev
 // ---------------------------------------------------------------
 
-const BASE =
-    import.meta.env.VITE_API_URL || "http://localhost:5000/api/v1";
+// Relative by default: in production the API and the screens are served
+// by the same process on the same port, so there is no origin to name
+// and no CORS to configure. In development the Vite proxy (see
+// vite.config.js) forwards /api to the backend, so this same path works
+// in both. Override with VITE_API_URL only when pointing at a mock or a
+// backend on another host.
+const BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
 const TOKEN_KEY = "nyayakosh.session";
 

@@ -4,3 +4,6 @@ node_modules/
 *.log
 dist/
 uploads/
+
+# ...but the template must ship, or a fresh clone has nothing to copy.
+!.env.example

@@ -3,6 +3,13 @@
 Everything needed to get the demo up, and an honest note on which parts
 are real.
 
+> **Just want to run it?** Double-click `start.bat` (Windows) or run
+> `./start.sh`, then open **http://localhost:5000**. One command, one
+> URL, no IDE. See **DEPLOY.md** for that and for putting it online.
+>
+> The rest of this file is the manual setup - useful when something is
+> wrong, or when you are developing.
+
 ## 1. Database
 
 ```bash
