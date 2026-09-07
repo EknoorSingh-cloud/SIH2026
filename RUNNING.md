@@ -201,6 +201,14 @@ as an engineering decision; none of them survives being oversold.
   will miss a name introduced in an unusual phrasing. Redaction treats
   it as a safety net beneath the identities an officer registers, never
   as the only source.
+- **Automatic name detection needs two words on one line.** A name must
+  follow its role word on the same line, and have at least a given and a
+  family name. Both rules exist because a real 34-page FIR form
+  otherwise yielded "No Delay", "Signature" and "Major" as people — the
+  pattern was stepping over line breaks into the form's own answers, and
+  redaction blacked out the furniture while leaving the actual names.
+  **For a protected case, register the victim on the case rather than
+  relying on detection.** That path takes any name, including one word.
 - **Search snippets are never shown for a protected case**, regardless
   of the redaction flag. `ts_headline` cuts fragments through names, so
   a fragment-level redactor could leave half an identity behind.

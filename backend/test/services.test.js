@@ -504,6 +504,38 @@ test("entities: capitalised names are still found after the same role word", () 
     );
 });
 
+test("entities: a name is never read across a line break", () => {
+    // From a real 34-page FIR form. The role word ends one line and the
+    // form's own answer begins the next; a pattern that steps over the
+    // newline captures the answer as a person. On that document the
+    // entire output was ["No Delay", "Signature", "Major"] - no real
+    // name was found at all, and redaction blacked out the form
+    // furniture instead of the victim.
+    const form = [
+        "8. Reasons for delay in reporting by the complainant/informant:",
+        "No Delay",
+        "9. Particulars of properties stolen",
+    ].join("\n");
+
+    assert.deepStrictEqual(
+        entitiesSvc.contextualIdentities(form).persons,
+        [],
+        "captured the next line as a name"
+    );
+});
+
+test("entities: a single capitalised word after a role word is not a name", () => {
+    // "14. Signature/Thumb Impression of the complainant" and the like.
+    // A person on an FIR has at least a given name and a family name.
+    const found = entitiesSvc.contextualIdentities(
+        "copy given to the complainant / informant, free of cost. 14. Signature"
+    );
+    assert.ok(
+        !found.persons.includes("Signature"),
+        `captured form furniture: ${JSON.stringify(found.persons)}`
+    );
+});
+
 test("entities: role words alone are not mistaken for a name", () => {
     const found = entitiesSvc.contextualIdentities("The complainant said the accused fled.");
     assert.ok(

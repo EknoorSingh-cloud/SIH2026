@@ -218,8 +218,18 @@ async function redactPdf(buffer, targets) {
     const rects = rectsForPages(pages, targets);
     const removed = rects.reduce((n, r) => n + r.length, 0);
 
-    const out = await pdf.renderRedactedPdf(buffer, rects, PDF_SCALE);
-    return { buffer: out, removed };
+    // Nothing matched anywhere. Hand back the original rather than
+    // rebuilding an identical document at great expense - on a
+    // thirty-page file that round trip cost a minute and a half and
+    // changed nothing.
+    if (removed === 0) return { buffer, removed: 0, rasterised: 0 };
+
+    const { buffer: out, rasterised } = await pdf.renderRedactedPdf(
+        buffer,
+        rects,
+        PDF_SCALE
+    );
+    return { buffer: out, removed, rasterised };
 }
 
 function redactText(buffer, targets) {

@@ -170,9 +170,27 @@ async function renderRedactedPdf(buffer, rectsByPage, scale = 2) {
     const { PDFDocument } = require("pdf-lib");
     const { task, doc } = await open(buffer);
 
+    const source = await PDFDocument.load(buffer, { ignoreEncryption: true });
     const out = await PDFDocument.create();
 
+    let rasterised = 0;
+
     for (let n = 1; n <= doc.numPages; n++) {
+        const rects = rectsByPage[n - 1] || [];
+
+        // A page with nothing to remove is copied across untouched.
+        //
+        // Rasterising it would cost seconds, double the file size and
+        // throw away its text and its sharpness, all to hide nothing.
+        // It buys no safety either: a page whose identities were never
+        // detected is equally exposed as a picture. Only pages that are
+        // actually being changed pay the price.
+        if (rects.length === 0) {
+            const [copied] = await out.copyPages(source, [n - 1]);
+            out.addPage(copied);
+            continue;
+        }
+
         const page = await doc.getPage(n);
         const viewport = page.getViewport({ scale });
 
@@ -189,28 +207,34 @@ async function renderRedactedPdf(buffer, rectsByPage, scale = 2) {
         // Paint out the identified areas before the pixels ever leave
         // this canvas.
         ctx.fillStyle = "#000000";
-        for (const r of rectsByPage[n - 1] || []) {
+        for (const r of rects) {
             ctx.fillRect(r.x, r.y, r.width, r.height);
         }
 
-        const png = await out.embedPng(canvas.toBuffer("image/png"));
+        // JPEG, not PNG. A rendered page of text compresses to a small
+        // fraction of the size, and the quality difference is invisible
+        // next to a black rectangle. PNG here was doubling the size of
+        // every export.
+        const image = await out.embedJpg(canvas.toBuffer("image/jpeg", 0.82));
 
         // Keep the original page size so the document still prints and
         // measures the way the original did.
         const original = page.getViewport({ scale: 1 });
         const newPage = out.addPage([original.width, original.height]);
-        newPage.drawImage(png, {
+        newPage.drawImage(image, {
             x: 0,
             y: 0,
             width: original.width,
             height: original.height,
         });
+
+        rasterised++;
     }
 
     await task.destroy();
 
     out.setProducer("SecureDocs - redacted export");
-    return Buffer.from(await out.save());
+    return { buffer: Buffer.from(await out.save()), rasterised };
 }
 
 /** Does this PDF carry a usable text layer, or is it a scan? */

@@ -53,13 +53,23 @@ const DATE =
 // A name is one to four capitalised words, or a run of Devanagari.
 const NAME = "((?:[A-Z][\\p{L}]+[ \\t]+){0,3}[A-Z][\\p{L}]+|[\\p{Script=Devanagari}]+(?:[ \\t]+[\\p{Script=Devanagari}]+){0,3})";
 
+// The separator is [ \t] and never \s. A name sits on the same line as
+// the word that introduces it. Allowing \s let the pattern step over a
+// line break and grab whatever the next line began with, so a real form
+// reading "reasons for delay ... by the complainant/informant:" then
+// "No Delay" on the next line produced the person "No Delay", and a
+// signature block produced "Signature". On a thirty-page document that
+// noise was the entire output - the actual names were never found, and
+// redaction dutifully blacked out the wrong words.
+const GAP = "[ \\t]*[:\\-]?[ \\t]*";
+
 const ROLE_NAME = new RegExp(
-    `\\b(?:complainant|victim|informant|prosecutrix|deceased)\\s*[:\\-]?\\s*${NAME}`,
+    `\\b(?:complainant|victim|informant|prosecutrix|deceased)${GAP}${NAME}`,
     "giu"
 );
 
 const RELATION_NAME = new RegExp(
-    `\\b(?:s\\/o|d\\/o|w\\/o|c\\/o|son of|daughter of|wife of|husband of|father of|mother of)\\s*[:\\-]?\\s*${NAME}`,
+    `\\b(?:s\\/o|d\\/o|w\\/o|c\\/o|son of|daughter of|wife of|husband of|father of|mother of)${GAP}${NAME}`,
     "giu"
 );
 
@@ -131,7 +141,14 @@ function trimToName(value) {
 
 function looksLikeName(value) {
     const words = String(value).split(/\s+/).filter(Boolean);
-    if (words.length === 0 || words.length > 4) return false;
+
+    // At least two words. A person on an FIR is written with a given
+    // name and a family name; a single capitalised word after a role
+    // word is almost always the form itself - "Signature", "Major",
+    // "Particulars". Requiring two is what separates a name from a
+    // heading, and the cost is a genuinely single-word name, which the
+    // officer can register on the case explicitly.
+    if (words.length < 2 || words.length > 4) return false;
 
     // Reject if every word is a stop word - a real name has at least one
     // token that is not vocabulary.
