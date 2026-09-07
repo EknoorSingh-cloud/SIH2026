@@ -315,6 +315,32 @@ router.get(
                 });
             }
 
+            // Redaction is only as good as the list of things to remove,
+            // and most of that list comes from entity extraction. Until
+            // the worker has finished, a protected document releases with
+            // the rules layer only - phone numbers and emails go, names
+            // and addresses do not. That is a partial redaction that
+            // looks like a complete one, which is the worst outcome
+            // available. Wait for the analysis instead.
+            if (sensitivity === "protected" && row.ocr_status !== "done") {
+                await audit.append({
+                    userId: req.user.id,
+                    action: "access_denied",
+                    documentId: req.params.document_id,
+                    caseId: row.case_id,
+                    version: row.version,
+                    detail: { reason: "analysis_incomplete", ocr_status: row.ocr_status },
+                    ip: req.ip,
+                });
+                return res.status(503).json({
+                    error: "analysis_incomplete",
+                    message:
+                        row.ocr_status === "failed"
+                            ? "This document could not be analysed, so it cannot be redacted reliably and will not be released."
+                            : "This document is still being analysed. A protected case cannot be released until that finishes.",
+                });
+            }
+
             let plaintext;
             try {
                 plaintext = await storage.retrieve(row);
@@ -782,6 +808,19 @@ router.get(
                     error: "redaction_unavailable",
                     message:
                         "This case requires redaction before release and the redaction service is not available.",
+                });
+            }
+
+            // Same reasoning as the download path: without the extracted
+            // entities, redaction only strips what the rules layer finds
+            // and every name survives. Refuse until the analysis is done.
+            if (protectedCase && row.ocr_status !== "done") {
+                return res.status(503).json({
+                    error: "analysis_incomplete",
+                    message:
+                        row.ocr_status === "failed"
+                            ? "This document could not be analysed, so it cannot be redacted reliably."
+                            : "This document is still being analysed. A protected case cannot be released until that finishes.",
                 });
             }
 

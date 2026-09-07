@@ -416,6 +416,31 @@ test("entities: contextual layer handles Devanagari names", () => {
     );
 });
 
+test("entities: lowercase prose after a role word is not a name", () => {
+    // The patterns are case-insensitive so they match COMPLAINANT and
+    // Complainant alike - but that flag also lets [A-Z] match lowercase,
+    // and "the complainant stated that the accused" captured "stated
+    // that the accused" as a person. Redaction then blanked that phrase
+    // out of the middle of a sentence.
+    const found = entitiesSvc.contextualIdentities(
+        "On 11/02/2026 the complainant stated that the accused followed her."
+    );
+    assert.deepStrictEqual(
+        found.persons,
+        [],
+        `captured prose as a name: ${JSON.stringify(found.persons)}`
+    );
+});
+
+test("entities: capitalised names are still found after the same role word", () => {
+    // The fix must not throw out the real ones.
+    const found = entitiesSvc.contextualIdentities("the complainant Sunita Sharma stated");
+    assert.ok(
+        found.persons.some((p) => p.includes("Sunita Sharma")),
+        `real name lost: ${JSON.stringify(found.persons)}`
+    );
+});
+
 test("entities: role words alone are not mistaken for a name", () => {
     const found = entitiesSvc.contextualIdentities("The complainant said the accused fled.");
     assert.ok(
