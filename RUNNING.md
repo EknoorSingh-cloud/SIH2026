@@ -164,11 +164,11 @@ valid login, still nothing.
 | BSA S.63 certificate | Real |
 | Export watermarking | Real, PDF only, visible (not steganographic) |
 | Search | Real, full-text over OCR output |
-| OCR | Real. Tesseract WASM, **English and Hindi tested — do not claim 22 languages** |
+| OCR | Real, images and **PDF** (text layer, or rendered and recognised). Tesseract WASM, **English and Hindi tested — do not claim 22 languages** |
 | Entity extraction | Real, **rules and document structure, not an NER model** |
 | Object storage | Real MinIO WORM path; **runs on local disk unless `STORAGE_BACKEND=minio`** |
 | Ledger | Real chaincode; **runs on the in-memory stub unless `LEDGER_BACKEND=fabric`** |
-| Redaction | Real for `text/*`; **refuses PDFs and images rather than half-redacting** |
+| Redaction | Real for `text/*` and **PDF**; refuses images rather than half-redacting |
 | ICJS | **Mock.** Fixtures. Every response says `"mock": true` |
 | DSC / eSign | **Stub.** Correct interface, throwaway ECDSA key, not a legal signature |
 | PWA (F12) | **Not built** |
@@ -178,12 +178,19 @@ as an engineering decision; none of them survives being oversold.
 
 ## Known limits worth stating before someone finds them
 
-- **Redaction covers text files only.** Truly redacting a PDF means
-  removing text operators from its content streams, not drawing a box
-  over them — a black rectangle with selectable text underneath is the
-  classic failure, and a judge will test it by copy-pasting. Images need
-  per-entity bounding boxes that OCR does not yet emit. Both refuse with
-  503 rather than release something half-redacted.
+- **Redaction covers text files and PDFs. Images still refuse.** A PDF
+  is redacted by rendering each page, painting out the identified areas,
+  and rebuilding the document from those images — so the released file
+  has no text layer at all and copy-pasting from it returns nothing.
+  The classic failure (a black box with the words still live underneath)
+  is avoided by construction rather than by care. Images refuse because
+  OCR returns the words but not their coordinates, so there is nothing
+  to draw a box around; a 503 beats a half-redaction.
+- **A protected document is not released until it has been analysed.**
+  Most of what redaction removes comes from entity extraction, so
+  releasing before the worker has finished would strip the phone number
+  and leave every name. Both release paths refuse while `ocr_status` is
+  anything but `done`.
 - **OCR is tested on English and Hindi only.** Adding a scheduled
   language is a traineddata file and an `OCR_LANGS` change, but claiming
   a language nobody has run a sample through is how a demo falls apart

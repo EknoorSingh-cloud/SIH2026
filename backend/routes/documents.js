@@ -365,7 +365,7 @@ router.get(
                 );
 
                 try {
-                    const result = redaction.redact(
+                    const result = await redaction.redact(
                         plaintext,
                         row.mime_type,
                         redaction.targetsFrom({
@@ -843,7 +843,7 @@ router.get(
                     [row.case_id]
                 );
 
-                const result = redaction.redact(
+                const result = await redaction.redact(
                     Buffer.from(text, "utf8"),
                     "text/plain",
                     redaction.targetsFrom({ identities, extracted: row.entities })
