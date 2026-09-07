@@ -213,6 +213,45 @@ test("icjs: metadata payload carries the hash and never the content", () => {
     }
 });
 
+// ---- audit: the hashed payload must not depend on key order ----
+
+const { canonicalJson } = require("../services/audit");
+
+test("audit: detail hashing is independent of key order", () => {
+    // Postgres JSONB does not preserve the order keys were written in.
+    // An entry written as {sha256, title} comes back as {title, sha256},
+    // so plain JSON.stringify produced a different string on read and
+    // the entry failed its own hash check - a false "chain BROKEN" with
+    // nothing actually wrong.
+    const written = { sha256: "abc", title: "Scanned FIR" };
+    const readBack = { title: "Scanned FIR", sha256: "abc" };
+
+    assert.notStrictEqual(
+        JSON.stringify(written),
+        JSON.stringify(readBack),
+        "this test is pointless if plain stringify already matches"
+    );
+    assert.strictEqual(canonicalJson(written), canonicalJson(readBack));
+});
+
+test("audit: canonical form is stable for nested objects and arrays", () => {
+    const a = { b: [3, { y: 1, x: 2 }], a: { d: 4, c: 3 } };
+    const b = { a: { c: 3, d: 4 }, b: [3, { x: 2, y: 1 }] };
+
+    assert.strictEqual(canonicalJson(a), canonicalJson(b));
+});
+
+test("audit: canonical form still distinguishes different content", () => {
+    // Sorting keys must not make two genuinely different entries hash
+    // the same - that would make tampering undetectable.
+    assert.notStrictEqual(
+        canonicalJson({ verified: true }),
+        canonicalJson({ verified: false })
+    );
+    assert.notStrictEqual(canonicalJson({ a: 1 }), canonicalJson({ b: 1 }));
+    assert.notStrictEqual(canonicalJson(null), canonicalJson({}));
+});
+
 // ---- F5: victim identity redaction ----
 
 const redaction = require("../services/redaction");
