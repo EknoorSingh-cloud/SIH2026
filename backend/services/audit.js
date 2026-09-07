@@ -3,6 +3,34 @@ const { sha256 } = require("./crypto");
 
 const GENESIS = "0".repeat(64);
 
+// ---------------------------------------------------------------
+// Serialise an object to a string that does not depend on key order.
+//
+// This matters more than it looks. `detail` is stored as JSONB, and
+// JSONB does not preserve the order keys were written in - it returns
+// them in its own order. So an entry written as {sha256, title} comes
+// back as {title, sha256}, JSON.stringify produces a different string,
+// and the entry fails its own hash check on verification.
+//
+// The effect was a false "hash chain BROKEN" on entries where nothing
+// whatsoever was wrong - the worst possible failure for the one number
+// that is supposed to prove the log has not been touched. Sorting the
+// keys makes the hash depend on the content and nothing else.
+// ---------------------------------------------------------------
+function canonicalJson(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+
+    return (
+        "{" +
+        Object.keys(value)
+            .sort()
+            .map((k) => JSON.stringify(k) + ":" + canonicalJson(value[k]))
+            .join(",") +
+        "}"
+    );
+}
+
 // Every entry stores the hash of the entry before it. Alter or remove
 // any row and every hash after it stops matching, so tampering with
 // the log itself becomes detectable.
@@ -37,7 +65,7 @@ async function append({
             caseId,
             version,
             occurredAt,
-            detail ? JSON.stringify(detail) : "",
+            detail ? canonicalJson(detail) : "",
         ].join("|");
 
         const entryHash = sha256(payload);
@@ -76,13 +104,20 @@ async function append({
 
 // Walk the chain and confirm every link still matches.
 // This is what backs the chain_intact flag in the API.
-async function verifyChain(documentId = null) {
-    const { rows } = documentId
-        ? await db.query(
-            "SELECT * FROM audit_log WHERE document_id = $1 ORDER BY id ASC",
-            [documentId]
-        )
-        : await db.query("SELECT * FROM audit_log ORDER BY id ASC");
+//
+// ALWAYS the whole log, never a filtered subset. The chain is global:
+// an entry's prev_hash is the hash of the entry written before it
+// anywhere in the system, which is usually about a different document.
+// Selecting one document's rows and checking them as if consecutive
+// reports BROKEN the moment two documents are worked on in the same
+// session - which is simply normal use. That is a false alarm on the
+// one number the whole design rests on, so the filter is gone.
+//
+// ponytail: O(n) over every audit row. Fine at demo and station scale.
+// If the log grows into millions, verify from the last known-good
+// checkpoint forward rather than from genesis every time.
+async function verifyChain() {
+    const { rows } = await db.query("SELECT * FROM audit_log ORDER BY id ASC");
 
     let prevHash = GENESIS;
     for (const row of rows) {
@@ -97,7 +132,7 @@ async function verifyChain(documentId = null) {
             row.case_id,
             row.version,
             new Date(row.occurred_at).toISOString(),
-            row.detail ? JSON.stringify(row.detail) : "",
+            row.detail ? canonicalJson(row.detail) : "",
         ].join("|");
 
         if (sha256(payload) !== row.entry_hash) {
@@ -108,4 +143,4 @@ async function verifyChain(documentId = null) {
     return { intact: true, brokenAt: null };
 }
 
-module.exports = { append, verifyChain, GENESIS };
+module.exports = { append, verifyChain, canonicalJson, GENESIS };

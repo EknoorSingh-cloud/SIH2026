@@ -148,6 +148,42 @@ test("an unassigned officer sees nothing, whatever their rank", async () => {
     }
 });
 
+test("audit chain stays intact when two documents are used interleaved", async () => {
+    // The regression this guards: chain_intact used to be computed over
+    // one document's rows only. Because the chain is global - an entry
+    // links to whatever was written before it anywhere - a document
+    // whose entries are not consecutive reported BROKEN during entirely
+    // normal use. It showed up as a red banner on the audit screen with
+    // nothing actually wrong.
+    const cases = await get(token, "/cases").then((r) => r.json());
+    assert.ok(cases.items.length >= 1, "no cases seeded");
+
+    // Touch documents in two different cases, alternating, so this
+    // document's audit rows are definitely not adjacent.
+    const docsPerCase = [];
+    for (const c of cases.items) {
+        const docs = await get(token, `/cases/${c.id}/documents`).then((r) => r.json());
+        if (docs[0]) docsPerCase.push(docs[0].id);
+    }
+
+    if (docsPerCase.length < 2) {
+        console.log("        (need a document in two cases, skipping)");
+        return;
+    }
+
+    for (let i = 0; i < 2; i++) {
+        for (const id of docsPerCase) await get(token, `/documents/${id}`);
+    }
+
+    const audit = await get(token, `/documents/${docsPerCase[0]}/audit`).then((r) => r.json());
+
+    assert.strictEqual(
+        audit.chain_intact,
+        true,
+        `chain reported broken at entry ${audit.broken_at} with nothing actually wrong`
+    );
+});
+
 test("the text endpoint withholds identifying entities on a protected case", async () => {
     const body = await get(token, "/documents/search?q=Sharma").then((r) => r.json());
     const target = body.items.find((i) => i.sensitivity === "protected");

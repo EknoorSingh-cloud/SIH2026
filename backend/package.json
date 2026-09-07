@@ -15,7 +15,8 @@
     "preflight": "node scripts/preflight.js",
     "code": "node scripts/demo-code.js",
     "seed": "node scripts/seed.js",
-    "seed:scan": "node scripts/seed-scan.js"
+    "seed:scan": "node scripts/seed-scan.js",
+    "tamper": "node scripts/tamper.js"
   },
   "keywords": [],
   "author": "",

@@ -907,7 +907,11 @@ router.get(
                 [req.params.document_id]
             );
 
-            const chain = await audit.verifyChain(req.params.document_id);
+            // The whole log, not just this document's entries. Chain
+            // integrity is a property of the entire log - checking one
+            // document's rows in isolation reports a break whenever
+            // another document was touched in between.
+            const chain = await audit.verifyChain();
 
             return res.json({
                 chain_intact: chain.intact,
