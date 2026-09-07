@@ -203,6 +203,43 @@ paths:
         '413':
           description: File too large
 
+  /documents/search:
+    get:
+      tags: [documents]
+      summary: >
+        Full-text search over OCR-extracted text. Results are restricted
+        to cases the caller is assigned to, so a search can never reveal
+        that a document exists in a case they are not on. Every search is
+        written to the audit log.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchHit'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  per_page:
+                    type: integer
+        '400':
+          description: q is required
+
   /documents/{document_id}:
     parameters:
       - $ref: '#/components/parameters/DocumentId'
@@ -366,6 +403,81 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  # ---------------------------------------------------------------
+  # ICJS exchange. MOCK - fixture-backed, no live CCTNS connection.
+  # Every response carries "mock": true.
+  # ---------------------------------------------------------------
+
+  /icjs/fir:
+    get:
+      tags: [icjs]
+      summary: >
+        FIR reference lookup against ICJS. Fixture-backed mock.
+        The FIR number is a query parameter, not a path segment, because
+        FIR numbers contain slashes and an encoded %2F in a path is
+        normalised or rejected by most reverse proxies.
+      parameters:
+        - name: fir_number
+          in: query
+          required: true
+          schema:
+            type: string
+          example: FIR/0142/2026
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcjsFir'
+        '400':
+          description: fir_number is required
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /icjs/cases/{case_id}/link:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [icjs]
+      summary: >
+        Link a case to an FIR held in CCTNS. Returns the acknowledgement
+        ICJS would return; persists nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fir_number]
+              properties:
+                fir_number:
+                  type: string
+      responses:
+        '200':
+          description: Linked
+        '400':
+          description: fir_number is required
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /icjs/documents/{document_id}/payload:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [icjs]
+      summary: >
+        The exact metadata payload that would be pushed to ICJS for this
+        document. Read-only; transmits nothing. Carries a pointer and a
+        hash, never the file, its text, or any victim data.
+      responses:
+        '200':
+          description: OK
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
 
   securitySchemes:
@@ -419,6 +531,81 @@ components:
         "protected" triggers mandatory redaction on every export path,
         for offences covered by Section 72 BNS.
       enum: [normal, restricted, protected]
+
+    SearchHit:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        doc_type:
+          $ref: '#/components/schemas/DocType'
+        case_id:
+          type: string
+          format: uuid
+        case_number:
+          type: string
+        sensitivity:
+          $ref: '#/components/schemas/Sensitivity'
+        version:
+          type: integer
+        uploaded_at:
+          type: string
+          format: date-time
+        snippet:
+          type: string
+          nullable: true
+          description: >
+            Null on a "protected" case until the redaction service is
+            live. The extracted text of a Section 72 document contains
+            exactly the victim identity redaction exists to remove, and a
+            search result is an export path like any other. The hit still
+            appears; the text does not.
+
+    IcjsFir:
+      type: object
+      description: FIR reference held in CCTNS. Fixture-backed mock.
+      properties:
+        fir_number:
+          type: string
+          example: FIR/0142/2026
+        cctns_id:
+          type: string
+        police_station:
+          type: string
+        district:
+          type: string
+        state:
+          type: string
+        registered_on:
+          type: string
+          format: date-time
+        act:
+          type: string
+        sections:
+          type: array
+          items:
+            type: string
+        investigating_officer:
+          type: object
+          properties:
+            name:
+              type: string
+            service_number:
+              type: string
+            rank:
+              $ref: '#/components/schemas/Rank'
+        status:
+          type: string
+        accused_count:
+          type: integer
+        source:
+          type: string
+        mock:
+          type: boolean
+          description: Always true until a real ICJS connection exists.
 
     User:
       type: object

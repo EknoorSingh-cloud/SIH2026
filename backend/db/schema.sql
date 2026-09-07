@@ -58,6 +58,7 @@ CREATE TYPE audit_action_t AS ENUM (
   'export_redacted',
   'new_version',
   'verify',
+  'search',          -- searching reveals what exists; it is an access event
   'share',
   'access_denied'
 );

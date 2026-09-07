@@ -6,8 +6,10 @@ const db = require("../db");
 const storage = require("../services/storage");
 const ledger = require("../services/ledger");
 const audit = require("../services/audit");
+const certificate = require("../services/certificate");
+const watermark = require("../services/watermark");
 const { requireAuth } = require("../middleware/auth");
-const { requirePermission } = require("../middleware/policy");
+const { requirePermission, caseIdForDocument } = require("../middleware/policy");
 
 const router = express.Router();
 
@@ -17,16 +19,6 @@ const upload = multer({
     limits: { fileSize: 25 * 1024 * 1024 },
 });
 
-// Look up which case a document belongs to. The policy engine needs
-// this to run its assignment check.
-async function caseIdForDocument(req) {
-    const { rows } = await db.query(
-        "SELECT case_id FROM documents WHERE id = $1",
-        [req.params.document_id]
-    );
-    return rows[0] ? rows[0].case_id : null;
-}
-
 async function sensitivityForDocument(documentId) {
     const { rows } = await db.query(
         `SELECT c.sensitivity
@@ -35,6 +27,37 @@ async function sensitivityForDocument(documentId) {
         [documentId]
     );
     return rows[0] ? rows[0].sensitivity : null;
+}
+
+// Recompute the hash of what is actually on disk and compare it to
+// both the stored value and the ledger.
+//
+// One function, two callers: /verify reports the result, and the
+// certificate refuses to issue without it. A certificate must never
+// attest to a hash that nobody just checked, so both paths have to
+// reach the same answer the same way.
+async function checkIntegrity(row) {
+    const chainRecord = await ledger.lookup(row.id);
+
+    let storedHash = null;
+    let failure = null;
+
+    try {
+        const plaintext = await storage.retrieve(row);
+        storedHash = crypto.createHash("sha256").update(plaintext).digest("hex");
+    } catch (e) {
+        // Decryption failed its authentication tag, which means the
+        // ciphertext on disk was modified.
+        failure = "ciphertext_modified";
+    }
+
+    const verified =
+        !failure &&
+        !!chainRecord &&
+        storedHash === row.sha256 &&
+        storedHash === chainRecord.sha256;
+
+    return { verified, failure, storedHash, chainRecord };
 }
 
 // ---------------------------------------------------------------
@@ -130,6 +153,81 @@ router.post(
 );
 
 // ---------------------------------------------------------------
+// GET /documents/search?q=
+//
+// MUST stay above /:document_id. Express matches routes in order, so
+// with these two swapped every search would be read as a request for
+// a document whose id is the word "search".
+//
+// There is deliberately no permission middleware here. Like GET /cases,
+// the JOIN to case_assignments IS the restriction - it cannot be
+// forgotten the way an optional WHERE clause can. A search must never
+// reveal that a document exists in a case you are not assigned to.
+// ---------------------------------------------------------------
+router.get("/search", requireAuth, async (req, res, next) => {
+    try {
+        const q = (req.query.q || "").trim();
+        if (!q) {
+            return res
+                .status(400)
+                .json({ error: "bad_request", message: "q is required." });
+        }
+
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const perPage = Math.min(100, parseInt(req.query.per_page, 10) || 25);
+
+        // Snippets are withheld on protected cases until redaction is
+        // live. The extracted text of an S.72 document contains exactly
+        // the victim identity that redaction exists to strip, and a
+        // search result is an export path like any other. The hit still
+        // shows - the reader is assigned to the case - but the text does
+        // not. Same reasoning as the 503 on /content.
+        const snippetsAllowed = process.env.REDACTION_ENABLED === "true";
+
+        // to_tsvector(...) here matches the expression on the GIN index
+        // in schema.sql exactly. Change one and you must change both or
+        // the index stops being used.
+        const { rows } = await db.query(
+            `SELECT d.id AS document_id, d.title, d.doc_type,
+                    c.id AS case_id, c.case_number, c.sensitivity,
+                    v.version, v.uploaded_at,
+                    CASE
+                      WHEN c.sensitivity = 'protected' AND NOT $3 THEN NULL
+                      ELSE ts_headline('simple', v.extracted_text,
+                                       plainto_tsquery('simple', $2),
+                                       'MaxFragments=2,MaxWords=18,MinWords=5')
+                    END AS snippet,
+                    count(*) OVER() AS total_count
+               FROM document_versions v
+               JOIN documents d ON d.id = v.document_id
+               JOIN cases c ON c.id = d.case_id
+               JOIN case_assignments a
+                 ON a.case_id = c.id AND a.user_id = $1
+              WHERE to_tsvector('simple', coalesce(v.extracted_text, ''))
+                    @@ plainto_tsquery('simple', $2)
+              ORDER BY v.uploaded_at DESC
+              LIMIT $4 OFFSET $5`,
+            [req.user.id, q, snippetsAllowed, perPage, (page - 1) * perPage]
+        );
+
+        const total = rows[0] ? Number(rows[0].total_count) : 0;
+        const items = rows.map(({ total_count, ...rest }) => rest);
+
+        // Searching reveals what exists. It is logged like any read.
+        await audit.append({
+            userId: req.user.id,
+            action: "search",
+            detail: { q, results: total },
+            ip: req.ip,
+        });
+
+        return res.json({ items, total, page, per_page: perPage });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ---------------------------------------------------------------
 // GET /documents/:document_id        metadata only
 // ---------------------------------------------------------------
 router.get(
@@ -174,9 +272,10 @@ router.get(
             const version = req.query.version ? parseInt(req.query.version, 10) : null;
 
             const { rows } = await db.query(
-                `SELECT v.*, d.case_id, d.title
+                `SELECT v.*, d.case_id, d.title, c.case_number
            FROM document_versions v
            JOIN documents d ON d.id = v.document_id
+           JOIN cases c ON c.id = d.case_id
           WHERE v.document_id = $1
             AND v.version = COALESCE($2, d.current_version)`,
                 [req.params.document_id, version]
@@ -222,6 +321,20 @@ router.get(
                 });
             }
 
+            // Stamp the copy with who pulled it. This runs on the export
+            // path only - the stored original is never rewritten, so the
+            // hash still verifies after a watermarked download.
+            //
+            // Redaction (when it lands) belongs immediately above this
+            // line, so the mark is applied on top of the redacted output
+            // rather than being stripped along with it.
+            const released = await watermark.apply(plaintext, row.mime_type, {
+                serviceNumber: req.user.service_number,
+                name: req.user.name,
+                caseNumber: row.case_number,
+                timestamp: new Date().toISOString(),
+            });
+
             await audit.append({
                 userId: req.user.id,
                 action: sensitivity === "protected" ? "export_redacted" : "download",
@@ -236,10 +349,10 @@ router.get(
                 "Content-Disposition",
                 `attachment; filename="${row.title.replace(/[^\w.-]/g, "_")}"`
             );
-            // Watermarks the copy with who pulled it. A leak stays traceable.
+            // The same identity that is stamped on the page itself.
             res.setHeader("X-Released-To", req.user.service_number);
 
-            return res.send(plaintext);
+            return res.send(released);
         } catch (err) {
             next(err);
         }
@@ -393,25 +506,8 @@ router.post(
                 return res.status(404).json({ error: "not_found", message: "Not found." });
             }
 
-            const chainRecord = await ledger.lookup(row.id);
-
-            let storedHash = null;
-            let failure = null;
-
-            try {
-                const plaintext = await storage.retrieve(row);
-                storedHash = crypto.createHash("sha256").update(plaintext).digest("hex");
-            } catch (e) {
-                // Decryption failed its authentication tag, which means the
-                // ciphertext on disk was modified.
-                failure = "ciphertext_modified";
-            }
-
-            const verified =
-                !failure &&
-                !!chainRecord &&
-                storedHash === row.sha256 &&
-                storedHash === chainRecord.sha256;
+            const { verified, failure, storedHash, chainRecord } =
+                await checkIntegrity(row);
 
             await audit.append({
                 userId: req.user.id,
@@ -439,6 +535,126 @@ router.post(
                 anchored_at: row.anchored_at,
                 signed_by: signer[0] || null,
             });
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
+// ---------------------------------------------------------------
+// GET /documents/:document_id/certificate
+//
+// The Section 63(4) BSA certificate. Courts reject electronic evidence
+// over a missing certificate and every Part A field is already in the
+// database, so this is the cheapest admissibility win available.
+//
+// Gated on document.verify rather than document.download: this is an
+// integrity attestation, and it is exactly the court-side roles
+// (prosecutor, judge) who need it. A constable cannot issue one.
+// ---------------------------------------------------------------
+router.get(
+    "/:document_id/certificate",
+    requireAuth,
+    requirePermission("document.verify", caseIdForDocument),
+    async (req, res, next) => {
+        try {
+            const version = req.query.version
+                ? parseInt(req.query.version, 10)
+                : null;
+
+            const { rows } = await db.query(
+                `SELECT v.*, d.id AS doc_id, d.title AS document_title, d.doc_type,
+                        d.case_id, c.case_number, c.title AS case_title,
+                        c.sensitivity
+                   FROM document_versions v
+                   JOIN documents d ON d.id = v.document_id
+                   JOIN cases c ON c.id = d.case_id
+                  WHERE v.document_id = $1
+                    AND v.version = COALESCE($2, d.current_version)`,
+                [req.params.document_id, version]
+            );
+
+            const row = rows[0];
+            if (!row) {
+                return res
+                    .status(404)
+                    .json({ error: "not_found", message: "Not found." });
+            }
+
+            // Verify at issue time. Signing a certificate for a document
+            // that does not currently verify would be attesting to
+            // something untrue, which is the one thing this document
+            // exists to avoid.
+            const { verified, failure } = await checkIntegrity(row);
+
+            if (!verified) {
+                await audit.append({
+                    userId: req.user.id,
+                    action: "access_denied",
+                    documentId: req.params.document_id,
+                    caseId: row.case_id,
+                    version: row.version,
+                    detail: { attempted: "certificate", failure },
+                    ip: req.ip,
+                });
+
+                return res.status(409).json({
+                    error: "not_verified",
+                    message:
+                        "This document does not currently verify, so no certificate can be issued. " +
+                        `Run POST /api/v1/documents/${req.params.document_id}/verify for the details.`,
+                });
+            }
+
+            const verifiedAt = new Date().toISOString();
+
+            const pdf = await certificate.build({
+                document: {
+                    id: row.doc_id,
+                    title: row.document_title,
+                    doc_type: row.doc_type,
+                },
+                caseRecord: {
+                    case_number: row.case_number,
+                    title: row.case_title,
+                    sensitivity: row.sensitivity,
+                },
+                version: {
+                    version: row.version,
+                    sha256: row.sha256,
+                    size_bytes: row.size_bytes,
+                    mime_type: row.mime_type,
+                    uploaded_at: row.uploaded_at,
+                    ledger_tx_id: row.ledger_tx_id,
+                    anchored_at: row.anchored_at,
+                    anchor_status: row.anchor_status,
+                },
+                // The officer producing the output now is the person in a
+                // responsible position in relation to its production.
+                producedBy: req.user,
+                verification: { verified, verified_at: verifiedAt },
+            });
+
+            await audit.append({
+                userId: req.user.id,
+                action: "verify",
+                documentId: req.params.document_id,
+                caseId: row.case_id,
+                version: row.version,
+                detail: { certificate_issued: true, sha256: row.sha256 },
+                ip: req.ip,
+            });
+
+            res.setHeader("Content-Type", "application/pdf");
+            res.setHeader(
+                "Content-Disposition",
+                `attachment; filename="bsa63-${row.case_number.replace(
+                    /[^\w.-]/g,
+                    "_"
+                )}-v${row.version}.pdf"`
+            );
+
+            return res.send(pdf);
         } catch (err) {
             next(err);
         }

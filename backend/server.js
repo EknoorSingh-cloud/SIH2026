@@ -6,6 +6,7 @@ const cors = require("cors");
 const authRoutes = require("./routes/auth");
 const caseRoutes = require("./routes/cases");
 const documentRoutes = require("./routes/documents");
+const icjsRoutes = require("./routes/icjs");
 const ledger = require("./services/ledger");
 const { requireAuth } = require("./middleware/auth");
 
@@ -31,6 +32,7 @@ app.get("/", (req, res) => {
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/cases", caseRoutes);
 app.use("/api/v1/documents", documentRoutes);
+app.use("/api/v1/icjs", icjsRoutes);
 
 app.get("/api/v1/me", requireAuth, (req, res) => {
     res.json({ user: req.user });

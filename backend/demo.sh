@@ -32,6 +32,24 @@ echo "--- VERIFY (clean) ---"
 curl -s -X POST localhost:5000/api/v1/documents/$DOC/verify -H "Authorization: Bearer $TOKEN"
 echo
 
+echo "--- BSA S.63 CERTIFICATE (clean - should issue) ---"
+curl -s -o /tmp/bsa63.pdf -w "http %{http_code}, %{size_download} bytes -> /tmp/bsa63.pdf\n" \
+  localhost:5000/api/v1/documents/$DOC/certificate -H "Authorization: Bearer $TOKEN"
+
+echo "--- SEARCH ---"
+curl -s -G localhost:5000/api/v1/documents/search \
+  --data-urlencode "q=test" -H "Authorization: Bearer $TOKEN"
+echo
+
+echo "--- ICJS FIR LOOKUP (mock) ---"
+curl -s -G localhost:5000/api/v1/icjs/fir \
+  --data-urlencode "fir_number=FIR/0142/2026" -H "Authorization: Bearer $TOKEN"
+echo
+
+echo "--- ICJS DOCUMENT PAYLOAD (mock, hash only - never the file) ---"
+curl -s localhost:5000/api/v1/icjs/documents/$DOC/payload -H "Authorization: Bearer $TOKEN"
+echo
+
 echo "--- TAMPERING ---"
 BLOB=$(ls -t uploads/*.enc | head -1)
 printf 'X' | dd of="$BLOB" bs=1 seek=0 conv=notrunc 2>/dev/null
@@ -40,6 +58,10 @@ echo "corrupted $BLOB"
 echo "--- VERIFY (tampered) ---"
 curl -s -X POST localhost:5000/api/v1/documents/$DOC/verify -H "Authorization: Bearer $TOKEN"
 echo
+
+echo "--- BSA S.63 CERTIFICATE (tampered - must refuse with 409) ---"
+curl -s -w "\nhttp %{http_code}\n" \
+  localhost:5000/api/v1/documents/$DOC/certificate -H "Authorization: Bearer $TOKEN"
 
 echo "--- AUDIT ---"
 curl -s localhost:5000/api/v1/documents/$DOC/audit -H "Authorization: Bearer $TOKEN"
