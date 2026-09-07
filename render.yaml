@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------
+# One-click deploy to Render, to get a public URL.
+#
+#   1. Push this repository to GitHub (already done)
+#   2. render.com -> New -> Blueprint -> pick this repository
+#   3. Set MASTER_KEY when prompted (see below)
+#   4. Wait for the build, then open the URL Render gives you
+#
+# Everything else - the database, the connection string, the port - is
+# wired up automatically by this file.
+#
+# READ THIS BEFORE DEPLOYING: a public URL means anyone with the link
+# can reach the sign-in page, and the seeded demo accounts have a known
+# password. See DEPLOY.md before sharing the link outside your team.
+# ---------------------------------------------------------------
+
+databases:
+  - name: nyayakosh-db
+    databaseName: sih_dms
+    user: nyayakosh
+    plan: free
+
+services:
+  - type: web
+    name: nyayakosh
+    runtime: node
+    plan: free
+    # Build the screens, install the server, prepare the database.
+    buildCommand: >
+      cd frontend && npm ci && npm run build &&
+      cd ../backend && npm ci &&
+      node scripts/db-setup.js &&
+      node scripts/seed.js || true
+    startCommand: node backend/server.js
+    healthCheckPath: /api/v1/me
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nyayakosh-db
+          property: connectionString
+
+      # Generated once by Render and then left alone. Changing it makes
+      # every document already uploaded permanently unreadable.
+      - key: MASTER_KEY
+        generateValue: true
+
+      # The free plan has no separate background worker, so the text
+      # reader runs inside the web process. Move it to its own service
+      # on a paid plan - see DEPLOY.md.
+      - key: RUN_WORKER_INLINE
+        value: "true"
+
+      - key: NODE_ENV
+        value: production
+
+      # WARNING: free instances have no persistent disk, so uploaded
+      # files are lost whenever the instance restarts. The database
+      # record survives, so those documents will then fail verification.
+      # Set STORAGE_BACKEND=minio with real credentials for anything
+      # that needs to keep its files.
+      - key: STORAGE_BACKEND
+        value: disk
+
+      - key: LEDGER_BACKEND
+        value: stub
+
+      - key: REDACTION_ENABLED
+        value: "false"
+
+      - key: OCR_LANGS
+        value: eng

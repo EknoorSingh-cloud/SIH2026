@@ -157,15 +157,36 @@ async function main() {
     console.log("OCR worker stopped.");
 }
 
-for (const sig of ["SIGINT", "SIGTERM"]) {
-    process.on(sig, () => {
-        if (stopping) process.exit(1);
-        console.log(`\n${sig} - finishing current document...`);
-        stopping = true;
+function stop() {
+    stopping = true;
+}
+
+// Run as its own process (npm run worker), which is what you want when
+// there is somewhere to run it. On a single-service host - a free cloud
+// tier with no separate background worker - server.js can require this
+// and call start() instead, so one process does both.
+//
+// ponytail: in-process means OCR competes with request handling for the
+// same CPU. Fine for a demo and light use; split it back out the moment
+// recognition starts slowing down responses.
+function start() {
+    main().catch((err) => console.error("OCR worker stopped:", err.message));
+    return stop;
+}
+
+if (require.main === module) {
+    for (const sig of ["SIGINT", "SIGTERM"]) {
+        process.on(sig, () => {
+            if (stopping) process.exit(1);
+            console.log(`\n${sig} - finishing current document...`);
+            stopping = true;
+        });
+    }
+
+    main().catch((err) => {
+        console.error(err);
+        process.exit(1);
     });
 }
 
-main().catch((err) => {
-    console.error(err);
-    process.exit(1);
-});
+module.exports = { start, stop };

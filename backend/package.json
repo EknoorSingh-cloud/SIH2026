@@ -12,7 +12,8 @@
     "test:ocr": "node test/ocr.test.js",
     "test:integration": "node test/integration.test.js",
     "db:setup": "node scripts/db-setup.js",
-    "preflight": "node scripts/preflight.js"
+    "preflight": "node scripts/preflight.js",
+    "code": "node scripts/demo-code.js"
   },
   "keywords": [],
   "author": "",
