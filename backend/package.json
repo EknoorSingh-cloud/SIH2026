@@ -10,7 +10,9 @@
     "init:minio": "node scripts/init-minio.js",
     "test": "node test/services.test.js",
     "test:ocr": "node test/ocr.test.js",
-    "test:integration": "node test/integration.test.js"
+    "test:integration": "node test/integration.test.js",
+    "db:setup": "node scripts/db-setup.js",
+    "preflight": "node scripts/preflight.js"
   },
   "keywords": [],
   "author": "",

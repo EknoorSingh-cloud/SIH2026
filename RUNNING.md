@@ -9,19 +9,17 @@ are real.
 createdb sih_dms
 
 cd backend
-psql -U postgres -d sih_dms -f db/schema.sql
-psql -U postgres -d sih_dms -f db/migrations/001_search_audit_action.sql
-psql -U postgres -d sih_dms -f db/migrations/002_redaction.sql
-psql -U postgres -d sih_dms -f db/migrations/003_ocr_processing.sql
-```
-
-`schema.sql` already contains everything in the migrations, so a fresh
-database only needs the schema. Run the migrations on a database created
-before those features landed. Both are idempotent.
-
-```bash
+npm install
+npm run db:setup          # schema + every migration
 node scripts/seed.js      # demo users and cases
 ```
+
+`db:setup` is safe to re-run: it skips the schema once the tables exist
+and every migration is idempotent.
+
+**Not psql.** `psql -U postgres` authenticates as the postgres OS user
+and on Windows it stops and waits for a password, so it looks like it has
+frozen. `db:setup` goes through the same `DATABASE_URL` the app uses.
 
 ## 2. Backend
 
@@ -112,7 +110,19 @@ npx @stoplight/prism mock openapi.yaml
 VITE_API_URL=http://127.0.0.1:4010 npm run dev
 ```
 
-## 4. The demo
+## 4. Before you demo: preflight
+
+```bash
+cd backend && npm run preflight
+```
+
+One command that answers "will this work if I start it now". It checks
+the database, the migrations, the master key, the seed data, the OCR
+queue, and whether an unassigned officer exists for the closing beat.
+FAIL blocks the demo. WARN still runs but changes what you can honestly
+claim while standing in front of people.
+
+## 5. The demo
 
 ```bash
 cd backend && ./demo.sh

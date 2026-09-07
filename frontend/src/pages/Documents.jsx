@@ -6,7 +6,6 @@ import {
   Download,
   Trash2,
   Eye,
-  MoreVertical,
   Filter,
 } from "lucide-react";
 
