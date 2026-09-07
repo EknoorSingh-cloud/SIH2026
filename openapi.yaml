@@ -167,6 +167,56 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /cases/{case_id}/protected-identities:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [cases]
+      summary: >
+        Identities redaction removes from every export on this case.
+        Readable only by officers assigned to the case. Never exported.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProtectedIdentity'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [cases]
+      summary: >
+        Flag an identity as protected. Deciding who counts is an
+        investigative judgement, so this needs case.assign.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                kind:
+                  type: string
+                  enum: [name, address, phone, relationship]
+                  default: name
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedIdentity'
+        '400':
+          description: value is required
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /documents:
     post:
       tags: [documents]
@@ -379,6 +429,43 @@ paths:
         '409':
           description: Cannot issue a certificate for an unverified document
 
+  /documents/{document_id}/custody:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: >
+        Chain of custody straight off the ledger - every write to this
+        version's key, oldest first. On the Fabric backend this is
+        GetHistoryForKey and no single organisation can edit it.
+      parameters:
+        - name: version
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ledger_backend:
+                    type: string
+                    enum: [fabric, stub]
+                    description: >
+                      "stub" is in-memory and proves nothing. Check this
+                      before presenting the result as a blockchain.
+                  version:
+                    type: integer
+                  entries:
+                    type: array
+                    items:
+                      type: object
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /documents/{document_id}/audit:
     parameters:
       - $ref: '#/components/parameters/DocumentId'
@@ -531,6 +618,21 @@ components:
         "protected" triggers mandatory redaction on every export path,
         for offences covered by Section 72 BNS.
       enum: [normal, restricted, protected]
+
+    ProtectedIdentity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        value:
+          type: string
+        kind:
+          type: string
+          enum: [name, address, phone, relationship]
+        added_at:
+          type: string
+          format: date-time
 
     SearchHit:
       type: object

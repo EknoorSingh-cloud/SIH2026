@@ -213,6 +213,150 @@ test("icjs: metadata payload carries the hash and never the content", () => {
     }
 });
 
+// ---- F5: victim identity redaction ----
+
+const redaction = require("../services/redaction");
+const entitiesSvc = require("../services/entities");
+
+const STATEMENT = [
+    "FIR/0142/2026 recorded under BNS Section 74 and Section 72.",
+    "The complainant Sunita Sharma, daughter of Ramesh Sharma, residing at",
+    "14 Nehru Road, stated that on 11/02/2026 the accused followed her.",
+    "She can be reached on 9876543210 or sunita.sharma@example.com.",
+    "Recorded by Inspector A Deshmukh, Sadar Bazar police station.",
+].join("\n");
+
+const VICTIM_TARGETS = ["Sunita Sharma", "Ramesh Sharma", "14 Nehru Road"];
+
+test("redaction: victim name is absent from the released text", () => {
+    const { buffer } = redaction.redact(
+        Buffer.from(STATEMENT),
+        "text/plain",
+        VICTIM_TARGETS
+    );
+    const out = buffer.toString();
+
+    assert.ok(!out.includes("Sunita Sharma"), "victim name survived redaction");
+    assert.ok(!out.includes("Ramesh Sharma"), "parent name survived redaction");
+    assert.ok(!out.includes("14 Nehru Road"), "address survived redaction");
+});
+
+test("redaction: phone, email and Aadhaar go without being named", () => {
+    // These come from the rules layer, not the identity list - nobody
+    // had to register them.
+    const withAadhaar = STATEMENT + "\nAadhaar 2345 6789 0123 on file.";
+    const { buffer } = redaction.redact(Buffer.from(withAadhaar), "text/plain", []);
+    const out = buffer.toString();
+
+    assert.ok(!out.includes("9876543210"), "phone number survived");
+    assert.ok(!out.includes("sunita.sharma@example.com"), "email survived");
+    assert.ok(!out.includes("2345 6789 0123"), "Aadhaar survived");
+});
+
+test("redaction: evidentiary fields are preserved", () => {
+    // A redactor that eats the FIR number and the statute references has
+    // destroyed the document's value as evidence.
+    const { buffer } = redaction.redact(
+        Buffer.from(STATEMENT),
+        "text/plain",
+        VICTIM_TARGETS
+    );
+    const out = buffer.toString();
+
+    assert.ok(out.includes("FIR/0142/2026"), "FIR number was redacted");
+    assert.ok(out.includes("Section 74"), "statute reference was redacted");
+    assert.ok(out.includes("Section 72"), "statute reference was redacted");
+    assert.ok(out.includes("11/02/2026"), "date was redacted");
+    assert.ok(out.includes("A Deshmukh"), "officer name was redacted");
+});
+
+test("redaction: reports how many spans it removed", () => {
+    const { removed } = redaction.redact(
+        Buffer.from(STATEMENT),
+        "text/plain",
+        VICTIM_TARGETS
+    );
+    assert.ok(removed >= 5, `expected several removals, got ${removed}`);
+});
+
+test("redaction: whole-word only, so a station name survives a victim name", () => {
+    const text = "Sita was found in Sitapur by the Sitapur unit.";
+    const { buffer } = redaction.redact(Buffer.from(text), "text/plain", ["Sita"]);
+    const out = buffer.toString();
+
+    assert.ok(!/\bSita\b/.test(out), "the name itself should be gone");
+    assert.strictEqual((out.match(/Sitapur/g) || []).length, 2, "Sitapur must survive");
+});
+
+test("redaction: never mutates the input buffer", () => {
+    // The stored original must stay byte-identical or the hash stops
+    // verifying and the whole integrity story collapses.
+    const original = Buffer.from(STATEMENT);
+    const copy = Buffer.from(original);
+
+    redaction.redact(original, "text/plain", VICTIM_TARGETS);
+
+    assert.ok(original.equals(copy), "redaction mutated the source buffer");
+});
+
+test("redaction: refuses PDF rather than drawing a box over live text", () => {
+    // A black rectangle over selectable text is the classic failure.
+    assert.strictEqual(redaction.canRedact("application/pdf"), false);
+    assert.throws(
+        () => redaction.redact(Buffer.from("%PDF-1.7"), "application/pdf", ["X"]),
+        redaction.UnsupportedFormatError
+    );
+});
+
+test("redaction: refuses images, which have no locatable text", () => {
+    assert.strictEqual(redaction.canRedact("image/png"), false);
+    assert.throws(
+        () => redaction.redact(Buffer.alloc(4), "image/jpeg", ["X"]),
+        redaction.UnsupportedFormatError
+    );
+});
+
+test("redaction: a one-character target is ignored, not matched everywhere", () => {
+    // "a" as a target must contribute nothing. The rules layer still
+    // removes the phone and email, so compare against that baseline
+    // rather than against zero.
+    const baseline = redaction.redact(Buffer.from(STATEMENT), "text/plain", []).removed;
+    const withTiny = redaction.redact(Buffer.from(STATEMENT), "text/plain", ["a"]).removed;
+
+    assert.strictEqual(withTiny, baseline);
+});
+
+test("redaction: merges F4 entities with registered identities", () => {
+    const targets = redaction.targetsFrom({
+        identities: [{ value: "Sunita Sharma" }],
+        extracted: { persons: ["Ramesh Sharma"], addresses: ["14 Nehru Road"], sections: ["72"] },
+    });
+
+    assert.ok(targets.includes("Sunita Sharma"));
+    assert.ok(targets.includes("Ramesh Sharma"));
+    assert.ok(targets.includes("14 Nehru Road"));
+    // Sections are evidence, never a redaction target.
+    assert.ok(!targets.includes("72"));
+});
+
+test("redaction: tolerates entities being absent entirely", () => {
+    assert.deepStrictEqual(redaction.targetsFrom({}), []);
+    assert.deepStrictEqual(
+        redaction.targetsFrom({ identities: [], extracted: null }),
+        []
+    );
+});
+
+test("entities: rules layer finds the structured fields", () => {
+    const found = entitiesSvc.extract(STATEMENT);
+
+    assert.ok(found.phones.includes("9876543210"));
+    assert.ok(found.emails.includes("sunita.sharma@example.com"));
+    assert.ok(found.fir_numbers.some((f) => f.includes("0142/2026")));
+    assert.ok(found.sections.length >= 2);
+    assert.ok(found.dates.includes("11/02/2026"));
+});
+
 // ---- F9: route ordering ----
 
 test("routes: /search is registered before /:document_id", () => {

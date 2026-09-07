@@ -8,6 +8,7 @@ const ledger = require("../services/ledger");
 const audit = require("../services/audit");
 const certificate = require("../services/certificate");
 const watermark = require("../services/watermark");
+const redaction = require("../services/redaction");
 const { requireAuth } = require("../middleware/auth");
 const { requirePermission, caseIdForDocument } = require("../middleware/policy");
 
@@ -322,6 +323,56 @@ router.get(
                 });
             }
 
+            // Redaction runs on this in-memory copy and nothing else. The
+            // stored blob is never rewritten, which is why the original
+            // still verifies as AUTHENTIC after a redacted export.
+            let redactedCount = null;
+
+            if (sensitivity === "protected") {
+                const { rows: identities } = await db.query(
+                    "SELECT value FROM case_protected_identities WHERE case_id = $1",
+                    [row.case_id]
+                );
+
+                try {
+                    const result = redaction.redact(
+                        plaintext,
+                        row.mime_type,
+                        redaction.targetsFrom({
+                            identities,
+                            extracted: row.entities,
+                        })
+                    );
+                    plaintext = result.buffer;
+                    redactedCount = result.removed;
+                } catch (err) {
+                    if (!(err instanceof redaction.UnsupportedFormatError)) throw err;
+
+                    // We cannot remove the identity from this file type
+                    // completely, so we do not send it at all. Falling back
+                    // to the original here would be the exact leak this
+                    // system exists to prevent.
+                    await audit.append({
+                        userId: req.user.id,
+                        action: "access_denied",
+                        documentId: req.params.document_id,
+                        caseId: row.case_id,
+                        version: row.version,
+                        detail: {
+                            reason: "redaction_unsupported_format",
+                            mime_type: row.mime_type,
+                        },
+                        ip: req.ip,
+                    });
+
+                    return res.status(503).json({
+                        error: "redaction_unavailable",
+                        message:
+                            "This case requires redaction before release and this file type cannot be redacted safely.",
+                    });
+                }
+            }
+
             // Stamp the copy with who pulled it. This runs on the export
             // path only - the stored original is never rewritten, so the
             // hash still verifies after a watermarked download.
@@ -342,6 +393,10 @@ router.get(
                 documentId: req.params.document_id,
                 caseId: row.case_id,
                 version: row.version,
+                // How many identities were removed. Zero on a protected
+                // case is a signal worth seeing, not a success.
+                detail:
+                    redactedCount === null ? null : { entities_removed: redactedCount },
                 ip: req.ip,
             });
 
