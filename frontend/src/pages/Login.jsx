@@ -70,7 +70,7 @@ export default function Login() {
                     <div className="login-icon">
                         {stage === "password" ? <Lock size={35} /> : <ShieldCheck size={35} />}
                     </div>
-                    <h1>NYAYAKOSH</h1>
+                    <h1>SecureDocs</h1>
                     <p>Secure Legal Document Management</p>
                 </div>
 

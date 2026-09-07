@@ -1,6 +1,6 @@
 @echo off
 REM ===================================================================
-REM  NYAYAKOSH - double-click this file.
+REM  SecureDocs - double-click this file.
 REM
 REM  It installs what is missing, sets up the database, builds the
 REM  screens, starts the text reader in the background, starts the
@@ -12,8 +12,8 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo   NYAYAKOSH - starting up
-echo   ======================
+echo   SecureDocs - starting up
+echo   ========================
 echo.
 
 where node >nul 2>&1
@@ -58,10 +58,10 @@ if errorlevel 1 (
 )
 
 echo   [4/5] Starting the text reader in the background...
-start "NYAYAKOSH text reader" /min cmd /c "cd backend && npm run worker"
+start "SecureDocs text reader" /min cmd /c "cd backend && npm run worker"
 
 echo   [5/5] Starting the server...
-start "NYAYAKOSH server" /min cmd /c "cd backend && npm start"
+start "SecureDocs server" /min cmd /c "cd backend && npm start"
 
 echo.
 echo   Waiting for the server to come up...
@@ -71,7 +71,7 @@ start "" http://localhost:5000
 
 echo.
 echo   ===================================================================
-echo     NYAYAKOSH is running:   http://localhost:5000
+echo     SecureDocs is running:   http://localhost:5000
 echo.
 echo     Sign in with
 echo       Service number : DL-INS-1001

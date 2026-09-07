@@ -54,7 +54,7 @@ export default function Layout({ children }) {
         <div className="app-layout">
             <aside className="sidebar">
                 <div className="logo">
-                    <h2>NYAYAKOSH</h2>
+                    <h2>SecureDocs</h2>
                     <p>Secure Legal DMS</p>
                 </div>
 

@@ -24,7 +24,7 @@ const {
     HeadBucketCommand,
 } = require("@aws-sdk/client-s3");
 
-const BUCKET = process.env.MINIO_BUCKET || "nyayakosh";
+const BUCKET = process.env.MINIO_BUCKET || "securedocs";
 const RETAIN_DAYS = Number(process.env.MINIO_RETAIN_DAYS || 3650);
 
 const s3 = new S3Client({

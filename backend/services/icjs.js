@@ -104,7 +104,7 @@ function documentMetadataPayload({ document, caseRecord, version }) {
     return {
         message_type: "DOCUMENT_METADATA",
         version: "1.0",
-        source_system: "NYAYAKOSH",
+        source_system: "SecureDocs",
         case: {
             case_number: caseRecord.case_number,
             sensitivity: caseRecord.sensitivity,
