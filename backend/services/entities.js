@@ -102,9 +102,37 @@ const NOT_A_NAME = new Set([
     "inspector", "sub", "constable", "head", "section", "fir",
 ]);
 
+// A name is written with capitals. The patterns that find names are
+// case-insensitive so they match "COMPLAINANT" and "Complainant"
+// alike, but that same flag also lets [A-Z] match lowercase - so
+// "the complainant stated that the accused" captured "stated that the
+// accused" as a person and redaction blanked it out of the sentence.
+// The capitalisation rule therefore has to be enforced here rather
+// than in the pattern.
+const startsUpper = (w) =>
+    /^[\p{Lu}]/u.test(w) || /^[\p{Script=Devanagari}]/u.test(w);
+
+// Keep only the opening run of capitalised words.
+//
+// The capture is greedy and runs on past the name into whatever follows:
+// "complainant Sunita Sharma stated" hands back "Sunita Sharma stated".
+// Trimming at the first lowercase word gives the name; a capture that
+// begins with a lowercase word - "stated that the accused" - trims to
+// nothing and is dropped, which is what should happen to prose.
+function trimToName(value) {
+    const words = String(value).split(/\s+/).filter(Boolean);
+    const kept = [];
+    for (const w of words) {
+        if (!startsUpper(w)) break;
+        kept.push(w);
+    }
+    return kept.join(" ");
+}
+
 function looksLikeName(value) {
-    const words = value.split(/\s+/);
-    if (words.length > 4) return false;
+    const words = String(value).split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 4) return false;
+
     // Reject if every word is a stop word - a real name has at least one
     // token that is not vocabulary.
     return words.some((w) => !NOT_A_NAME.has(w.toLowerCase()));
@@ -121,7 +149,9 @@ function contextualIdentities(text) {
     const persons = [
         ...captureAll(src, ROLE_NAME),
         ...captureAll(src, RELATION_NAME),
-    ].filter(looksLikeName);
+    ]
+        .map(trimToName)
+        .filter(looksLikeName);
 
     return {
         persons: [...new Set(persons)],
