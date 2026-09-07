@@ -1,7 +1,7 @@
 {
   "name": "anchor-chaincode",
   "version": "1.0.0",
-  "description": "Hash anchoring and chain of custody for NYAYAKOSH",
+  "description": "Hash anchoring and chain of custody for SecureDocs",
   "main": "index.js",
   "engines": {
     "node": ">=18"

@@ -61,7 +61,7 @@ function unwrapKey(wrapped) {
 // ---------------------------------------------------------------
 
 const BACKEND = (process.env.STORAGE_BACKEND || "disk").toLowerCase();
-const BUCKET = process.env.MINIO_BUCKET || "nyayakosh";
+const BUCKET = process.env.MINIO_BUCKET || "securedocs";
 
 let s3 = null;
 

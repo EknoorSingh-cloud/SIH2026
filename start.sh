@@ -1,6 +1,6 @@
 #!/bin/bash
 # ===================================================================
-#  NYAYAKOSH - one command to run everything (macOS / Linux).
+#  SecureDocs - one command to run everything (macOS / Linux).
 #
 #      ./start.sh
 #
@@ -13,8 +13,8 @@ set -e
 cd "$(dirname "$0")"
 
 echo
-echo "  NYAYAKOSH - starting up"
-echo "  ======================"
+echo "  SecureDocs - starting up"
+echo "  ========================"
 echo
 
 command -v node >/dev/null || { echo "  [X] Node.js is not installed - https://nodejs.org"; exit 1; }
@@ -58,7 +58,7 @@ echo
 cat <<'BANNER'
 
   ===================================================================
-    NYAYAKOSH is running:   http://localhost:5000
+    SecureDocs is running:   http://localhost:5000
 
     Sign in with
       Service number : DL-INS-1001

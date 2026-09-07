@@ -1,4 +1,4 @@
-# Running NYAYAKOSH
+# Running SecureDocs
 
 Everything needed to get the demo up, and an honest note on which parts
 are real.
@@ -57,7 +57,7 @@ STORAGE_BACKEND=disk
 # MINIO_ENDPOINT=http://localhost:9000
 # MINIO_ACCESS_KEY=minioadmin
 # MINIO_SECRET_KEY=minioadmin
-# MINIO_BUCKET=nyayakosh
+# MINIO_BUCKET=securedocs
 
 # OCR languages. Only add one you have run a sample through.
 OCR_LANGS=eng+hin

@@ -1,4 +1,4 @@
-# Running and deploying NYAYAKOSH
+# Running and deploying SecureDocs
 
 Three ways, from least to most effort. Pick by what you actually need.
 

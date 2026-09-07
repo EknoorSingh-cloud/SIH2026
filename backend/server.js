@@ -103,7 +103,7 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
     const n = await ledger.rehydrate().catch(() => 0);
     console.log("");
-    console.log(`  NYAYAKOSH is running:  http://localhost:${PORT}`);
+    console.log(`  SecureDocs is running:  http://localhost:${PORT}`);
     console.log("");
     if (!HAS_CLIENT) {
         console.log("  API only - no frontend build found.");

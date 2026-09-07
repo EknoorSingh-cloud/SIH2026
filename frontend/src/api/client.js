@@ -19,7 +19,7 @@
 // backend on another host.
 const BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
-const TOKEN_KEY = "nyayakosh.session";
+const TOKEN_KEY = "securedocs.session";
 
 // sessionStorage, not localStorage: the token dies with the tab. On a
 // shared station machine that difference matters.

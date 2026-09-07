@@ -160,7 +160,7 @@ async function build(data) {
     const signature = dsc.sign(version.sha256, producedBy.id);
 
     pdfDoc.setTitle(`BSA S.63 Certificate - ${toWinAnsi(document.title)}`);
-    pdfDoc.setProducer("NYAYAKOSH Secure Document Management System");
+    pdfDoc.setProducer("SecureDocs Secure Document Management System");
 
     s.text("CERTIFICATE UNDER SECTION 63(4)", { size: 15, font: fonts.bold, gap: 6 });
     s.text("BHARATIYA SAKSHYA ADHINIYAM, 2023", { size: 11, font: fonts.bold, gap: 2 });
@@ -193,7 +193,7 @@ async function build(data) {
 
     s.heading("PARTICULARS OF THE COMPUTER SYSTEM");
 
-    s.field("System", "NYAYAKOSH Secure Document Management System");
+    s.field("System", "SecureDocs Secure Document Management System");
     s.field("Host", os.hostname());
     s.field("Platform", `${os.type()} ${os.release()} (${process.arch})`);
     s.field("Runtime", `Node.js ${process.version}`);

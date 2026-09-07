@@ -61,7 +61,7 @@ services:
       MINIO_ENDPOINT: http://storage:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: nyayakosh
+      MINIO_BUCKET: securedocs
       LEDGER_BACKEND: stub
       REDACTION_ENABLED: "false"
       OCR_LANGS: eng+hin
@@ -87,7 +87,7 @@ services:
       MINIO_ENDPOINT: http://storage:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
-      MINIO_BUCKET: nyayakosh
+      MINIO_BUCKET: securedocs
       OCR_LANGS: eng+hin
     volumes:
       - tesseract-cache:/app/backend/.tesseract

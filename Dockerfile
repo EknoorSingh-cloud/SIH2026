@@ -1,8 +1,8 @@
 # ---------------------------------------------------------------
 # One image that serves the screens and the API on a single port.
 #
-#   docker build -t nyayakosh .
-#   docker run -p 5000:5000 --env-file backend/.env nyayakosh
+#   docker build -t securedocs .
+#   docker run -p 5000:5000 --env-file backend/.env securedocs
 #
 # Two stages so the finished image does not carry the frontend build
 # tools around with it.

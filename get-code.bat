@@ -9,7 +9,7 @@ REM
 REM  Leave it open beside the browser during the demo.
 REM  Close the window when you are done.
 REM ===================================================================
-title NYAYAKOSH - sign-in codes
+title SecureDocs - sign-in codes
 cd /d "%~dp0backend"
 
 if not exist "scripts\demo-code.js" (
