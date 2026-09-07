@@ -1,7 +1,14 @@
 // Creates test users so you can actually log in.
-// Run:  node -r dotenv/config scripts/seed.js
+//
+//   npm run seed
 //
 // Safe to run more than once - it clears and rebuilds the test data.
+//
+// Loads .env itself, like every other script here. It used to require
+// `node -r dotenv/config scripts/seed.js`, so running it the obvious way
+// failed with a SASL "client password must be a string" error that says
+// nothing at all about the actual problem.
+require("dotenv").config({ quiet: true });
 
 const db = require("../db");
 const { hashPassword, generateMfaSecret, totpUri } = require("../services/crypto");
@@ -19,13 +26,31 @@ const USERS = [
 async function main() {
     console.log("Seeding...\n");
 
-    // Order matters because of foreign keys.
-    await db.query("DELETE FROM case_assignments");
-    await db.query("DELETE FROM sessions");
-    await db.query("DELETE FROM document_versions");
-    await db.query("DELETE FROM documents");
-    await db.query("DELETE FROM cases");
-    await db.query("DELETE FROM users");
+    // The audit log points at documents and cases, and it is protected
+    // by rules that silently discard DELETE - which is the whole point
+    // of it. That protection also makes this reset impossible: deleting
+    // a document trips the foreign key from audit_log, and the audit
+    // rows cannot be removed to clear the way.
+    //
+    // So the rule is switched off for exactly as long as it takes to
+    // wipe, and switched back on in a finally block so an error cannot
+    // leave the log unprotected. This is the one place in the entire
+    // project that is allowed to do this, it is a development seeding
+    // tool, and it must never be reachable from the running service.
+    await db.query("ALTER TABLE audit_log DISABLE RULE audit_log_no_delete");
+    try {
+        await db.query("DELETE FROM audit_log");
+
+        // Order matters because of foreign keys.
+        await db.query("DELETE FROM case_assignments");
+        await db.query("DELETE FROM sessions");
+        await db.query("DELETE FROM document_versions");
+        await db.query("DELETE FROM documents");
+        await db.query("DELETE FROM cases");
+        await db.query("DELETE FROM users");
+    } finally {
+        await db.query("ALTER TABLE audit_log ENABLE RULE audit_log_no_delete");
+    }
 
     const created = [];
 
