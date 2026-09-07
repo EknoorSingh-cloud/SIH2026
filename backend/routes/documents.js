@@ -135,6 +135,7 @@ router.post(
                     documentId,
                     sha256: blob.sha256,
                     signedBy: req.user.id,
+                    station: req.user.station,
                 })
                 .catch((e) => console.error("anchor failed", e));
 
@@ -344,6 +345,19 @@ router.get(
                 ip: req.ip,
             });
 
+            // Custody events append to the same ledger asset as the
+            // anchor, so the version's history is the full chain of
+            // custody. Fire and forget for the same reason anchoring is:
+            // a slow ledger must not hold up a release.
+            ledger
+                .recordCustody({
+                    versionId: row.id,
+                    action: "export",
+                    actor: req.user.id,
+                    station: req.user.station,
+                })
+                .catch((e) => console.error("custody record failed", e.message));
+
             res.setHeader("Content-Type", row.mime_type || "application/octet-stream");
             res.setHeader(
                 "Content-Disposition",
@@ -462,6 +476,7 @@ router.post(
                     documentId: req.params.document_id,
                     sha256: blob.sha256,
                     signedBy: req.user.id,
+                    station: req.user.station,
                 })
                 .catch((e) => console.error("anchor failed", e));
 
@@ -655,6 +670,56 @@ router.get(
             );
 
             return res.send(pdf);
+        } catch (err) {
+            next(err);
+        }
+    }
+);
+
+// ---------------------------------------------------------------
+// GET /documents/:document_id/custody
+//
+// The chain of custody straight off the ledger - every write to this
+// version's key, oldest first. On the Fabric backend this is
+// GetHistoryForKey and no single organisation can edit it.
+//
+// Returns an empty history on the stub backend, which has none. The
+// backend is named in the response so nobody mistakes one for the
+// other.
+// ---------------------------------------------------------------
+router.get(
+    "/:document_id/custody",
+    requireAuth,
+    requirePermission("document.verify", caseIdForDocument),
+    async (req, res, next) => {
+        try {
+            const version = req.query.version
+                ? parseInt(req.query.version, 10)
+                : null;
+
+            const { rows } = await db.query(
+                `SELECT v.id, v.version
+                   FROM document_versions v
+                   JOIN documents d ON d.id = v.document_id
+                  WHERE v.document_id = $1
+                    AND v.version = COALESCE($2, d.current_version)`,
+                [req.params.document_id, version]
+            );
+
+            const row = rows[0];
+            if (!row) {
+                return res
+                    .status(404)
+                    .json({ error: "not_found", message: "Not found." });
+            }
+
+            const entries = await ledger.history(row.id);
+
+            return res.json({
+                ledger_backend: ledger.backend,
+                version: row.version,
+                entries,
+            });
         } catch (err) {
             next(err);
         }

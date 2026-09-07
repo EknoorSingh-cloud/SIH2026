@@ -64,5 +64,17 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
     const n = await ledger.rehydrate().catch(() => 0);
     console.log(`Server running on port ${PORT}`);
-    if (n) console.log(`Ledger stub rehydrated ${n} anchors`);
+
+    // Say which ledger is behind this process. Confusing the in-memory
+    // stub for the Fabric network in front of an audience would be a
+    // claim nobody could defend.
+    console.log(`Ledger backend: ${ledger.backend}`);
+    if (ledger.backend === "stub") {
+        console.log("  (in-memory - not independent, set LEDGER_BACKEND=fabric)");
+    }
+    if (n) console.log(`  rehydrated ${n} anchors`);
+
+    if (process.env.REDACTION_ENABLED !== "true") {
+        console.log("Redaction: DISABLED - protected cases will refuse to export");
+    }
 });
