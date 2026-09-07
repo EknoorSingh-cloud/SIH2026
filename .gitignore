@@ -7,3 +7,6 @@ uploads/
 
 # ...but the template must ship, or a fresh clone has nothing to copy.
 !.env.example
+
+# Scratch space for local experiments
+backend/.scratch/

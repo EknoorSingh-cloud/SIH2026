@@ -1,5 +1,5 @@
 const assert = require("assert");
-const { PDFDocument } = require("pdf-lib");
+const { PDFDocument, StandardFonts } = require("pdf-lib");
 
 const dsc = require("../services/dsc");
 const watermark = require("../services/watermark");
@@ -267,8 +267,8 @@ const STATEMENT = [
 
 const VICTIM_TARGETS = ["Sunita Sharma", "Ramesh Sharma", "14 Nehru Road"];
 
-test("redaction: victim name is absent from the released text", () => {
-    const { buffer } = redaction.redact(
+test("redaction: victim name is absent from the released text", async () => {
+    const { buffer } = await redaction.redact(
         Buffer.from(STATEMENT),
         "text/plain",
         VICTIM_TARGETS
@@ -280,11 +280,11 @@ test("redaction: victim name is absent from the released text", () => {
     assert.ok(!out.includes("14 Nehru Road"), "address survived redaction");
 });
 
-test("redaction: phone, email and Aadhaar go without being named", () => {
+test("redaction: phone, email and Aadhaar go without being named", async () => {
     // These come from the rules layer, not the identity list - nobody
     // had to register them.
     const withAadhaar = STATEMENT + "\nAadhaar 2345 6789 0123 on file.";
-    const { buffer } = redaction.redact(Buffer.from(withAadhaar), "text/plain", []);
+    const { buffer } = await redaction.redact(Buffer.from(withAadhaar), "text/plain", []);
     const out = buffer.toString();
 
     assert.ok(!out.includes("9876543210"), "phone number survived");
@@ -292,10 +292,10 @@ test("redaction: phone, email and Aadhaar go without being named", () => {
     assert.ok(!out.includes("2345 6789 0123"), "Aadhaar survived");
 });
 
-test("redaction: evidentiary fields are preserved", () => {
+test("redaction: evidentiary fields are preserved", async () => {
     // A redactor that eats the FIR number and the statute references has
     // destroyed the document's value as evidence.
-    const { buffer } = redaction.redact(
+    const { buffer } = await redaction.redact(
         Buffer.from(STATEMENT),
         "text/plain",
         VICTIM_TARGETS
@@ -309,8 +309,8 @@ test("redaction: evidentiary fields are preserved", () => {
     assert.ok(out.includes("A Deshmukh"), "officer name was redacted");
 });
 
-test("redaction: reports how many spans it removed", () => {
-    const { removed } = redaction.redact(
+test("redaction: reports how many spans it removed", async () => {
+    const { removed } = await redaction.redact(
         Buffer.from(STATEMENT),
         "text/plain",
         VICTIM_TARGETS
@@ -318,49 +318,112 @@ test("redaction: reports how many spans it removed", () => {
     assert.ok(removed >= 5, `expected several removals, got ${removed}`);
 });
 
-test("redaction: whole-word only, so a station name survives a victim name", () => {
+test("redaction: whole-word only, so a station name survives a victim name", async () => {
     const text = "Sita was found in Sitapur by the Sitapur unit.";
-    const { buffer } = redaction.redact(Buffer.from(text), "text/plain", ["Sita"]);
+    const { buffer } = await redaction.redact(Buffer.from(text), "text/plain", ["Sita"]);
     const out = buffer.toString();
 
     assert.ok(!/\bSita\b/.test(out), "the name itself should be gone");
     assert.strictEqual((out.match(/Sitapur/g) || []).length, 2, "Sitapur must survive");
 });
 
-test("redaction: never mutates the input buffer", () => {
+test("redaction: never mutates the input buffer", async () => {
     // The stored original must stay byte-identical or the hash stops
     // verifying and the whole integrity story collapses.
     const original = Buffer.from(STATEMENT);
     const copy = Buffer.from(original);
 
-    redaction.redact(original, "text/plain", VICTIM_TARGETS);
+    await redaction.redact(original, "text/plain", VICTIM_TARGETS);
 
     assert.ok(original.equals(copy), "redaction mutated the source buffer");
 });
 
-test("redaction: refuses PDF rather than drawing a box over live text", () => {
-    // A black rectangle over selectable text is the classic failure.
-    assert.strictEqual(redaction.canRedact("application/pdf"), false);
-    assert.throws(
-        () => redaction.redact(Buffer.from("%PDF-1.7"), "application/pdf", ["X"]),
-        redaction.UnsupportedFormatError
-    );
-});
 
-test("redaction: refuses images, which have no locatable text", () => {
+test("redaction: refuses images, which have no locatable text", async () => {
+    // OCR gives the words in a photograph but not their coordinates, so
+    // there is nothing to draw a box around. Refusing is the only safe
+    // answer until it does.
     assert.strictEqual(redaction.canRedact("image/png"), false);
-    assert.throws(
+    await assert.rejects(
         () => redaction.redact(Buffer.alloc(4), "image/jpeg", ["X"]),
         redaction.UnsupportedFormatError
     );
 });
 
-test("redaction: a one-character target is ignored, not matched everywhere", () => {
+test("redaction: PDF is a supported format now", () => {
+    assert.strictEqual(redaction.canRedact("application/pdf"), true);
+    assert.strictEqual(redaction.canRedact("text/plain"), true);
+    assert.strictEqual(redaction.canRedact("image/png"), false);
+    assert.strictEqual(redaction.canRedact(undefined), false);
+});
+
+test("redaction: a redacted PDF has NO text layer left at all", async () => {
+    // The guarantee that makes PDF redaction trustworthy. The output is
+    // rebuilt from images, so there is nothing to select or copy - not
+    // a black box with the words still underneath it.
+    const pdfSvc = require("../services/pdf");
+
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const page = doc.addPage([595, 842]);
+    [
+        "FIR No. 198 of 2026",
+        "Under BNS Section 74 and Section 72",
+        "Complainant Sunita Sharma",
+        "Daughter of Ramesh Sharma",
+        "Phone 9876543210",
+    ].forEach((t, i) => page.drawText(t, { x: 60, y: 760 - i * 28, size: 13, font }));
+
+    const original = Buffer.from(await doc.save());
+
+    // The original really does carry its text - otherwise this proves
+    // nothing.
+    const before = await pdfSvc.extractText(original);
+    assert.ok(before.text.includes("Sunita Sharma"), "fixture has no text layer");
+
+    const { buffer, removed } = await redaction.redact(original, "application/pdf", [
+        "Sunita Sharma",
+        "Ramesh Sharma",
+    ]);
+
+    assert.ok(removed > 0, "nothing was redacted");
+    assert.strictEqual(buffer.subarray(0, 4).toString(), "%PDF");
+
+    const after = await pdfSvc.extractText(buffer);
+    for (const leak of ["Sunita", "Ramesh", "9876543210"]) {
+        assert.ok(
+            !after.text.includes(leak),
+            `"${leak}" is still extractable from the redacted PDF`
+        );
+    }
+    assert.strictEqual(after.text, "", "the redacted export still has a text layer");
+});
+
+test("redaction: the stored PDF is never modified", async () => {
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    doc.addPage([300, 300]).drawText("Complainant Sunita Sharma", {
+        x: 20,
+        y: 200,
+        size: 12,
+        font,
+    });
+    const original = Buffer.from(await doc.save());
+    const copy = Buffer.from(original);
+
+    await redaction.redact(original, "application/pdf", ["Sunita Sharma"]);
+
+    // If the original were altered, its hash would stop verifying and
+    // every released document would read as TAMPERED afterwards.
+    assert.ok(original.equals(copy), "redaction mutated the stored PDF");
+});
+
+test("redaction: a one-character target is ignored, not matched everywhere", async () => {
     // "a" as a target must contribute nothing. The rules layer still
     // removes the phone and email, so compare against that baseline
     // rather than against zero.
-    const baseline = redaction.redact(Buffer.from(STATEMENT), "text/plain", []).removed;
-    const withTiny = redaction.redact(Buffer.from(STATEMENT), "text/plain", ["a"]).removed;
+    const baseline = await redaction.redact(Buffer.from(STATEMENT), "text/plain", []).removed;
+    const withTiny = await redaction.redact(Buffer.from(STATEMENT), "text/plain", ["a"]).removed;
 
     assert.strictEqual(withTiny, baseline);
 });
@@ -449,12 +512,12 @@ test("entities: role words alone are not mistaken for a name", () => {
     );
 });
 
-test("entities: contextual output feeds redaction directly", () => {
+test("entities: contextual output feeds redaction directly", async () => {
     // F3 -> F4 -> F5. Whatever the rules find must be a usable target.
     const targets = redaction.targetsFrom({
         extracted: entitiesSvc.extract(STATEMENT),
     });
-    const { buffer } = redaction.redact(Buffer.from(STATEMENT), "text/plain", targets);
+    const { buffer } = await redaction.redact(Buffer.from(STATEMENT), "text/plain", targets);
 
     assert.ok(
         !buffer.toString().includes("Sunita Sharma"),
@@ -479,9 +542,9 @@ test("entities: FIR numbers in longhand as well as slashed form", () => {
     }
 });
 
-test("entities: a longhand FIR number is preserved through redaction", () => {
+test("entities: a longhand FIR number is preserved through redaction", async () => {
     const text = "FIR 0142 of 2026. Complainant Sunita Sharma, phone 9876543210.";
-    const { buffer } = redaction.redact(Buffer.from(text), "text/plain", [
+    const { buffer } = await redaction.redact(Buffer.from(text), "text/plain", [
         "Sunita Sharma",
     ]);
     const out = buffer.toString();

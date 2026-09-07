@@ -16,25 +16,29 @@ const entities = require("./entities");
 //      integrity story collapses. This runs on the export path, on a
 //      buffer already decrypted in memory. It never writes to storage.
 //
-// WHAT IS NOT SUPPORTED, AND WHY IT REFUSES RATHER THAN GUESSES:
+// WHAT IS SUPPORTED:
 //
-//   PDF    Truly redacting a PDF means removing text-showing operators
-//          from the content streams, not covering them. Doing that
-//          correctly across subset fonts and custom encodings is a
-//          project in itself, and doing it 90% correctly leaves the
-//          victim's name selectable underneath a black box - worse
-//          than refusing, because it looks safe.
-//   Images Blacking out pixels needs the bounding box of each entity.
-//          OCR (F3) writes extracted text but no coordinates, so there
-//          is nothing to locate. You cannot redact what you cannot
-//          find.
+//   text/* The characters are removed from the string outright.
 //
-// Both refuse. The route turns that into the same 503 an unavailable
-// redaction service returns. A 503 is a better demo than a leak.
+//   PDF    The page is rendered, the identified areas are painted out,
+//          and the document is REBUILT from those images. Both rules
+//          hold by construction: the pixels are covered before the page
+//          is encoded, and there is no text layer left in the output at
+//          all, so copy-paste returns nothing. Covering text in the
+//          original file would leave the words underneath the box,
+//          which is precisely the failure this avoids.
 //
-// ponytail: text/* only. To cover PDFs, rasterise each page and rebuild
-// the file with no text layer at all; to cover images, have F3 emit
-// per-token bounding boxes and black those out.
+// WHAT STILL REFUSES:
+//
+//   Images A photograph has no text layer to locate words with. OCR
+//          gives us the words but not their coordinates, so there is
+//          nothing to draw a box around. You cannot redact what you
+//          cannot find, so it refuses. The route turns that into the
+//          same 503 an unavailable redaction service returns - a 503
+//          is a better demo than a leak.
+//
+// ponytail: images are the remaining gap. Tesseract can return per-word
+// bounding boxes; feeding those through rectsForPages would close it.
 // ---------------------------------------------------------------
 
 const MARK = "[REDACTED]";
@@ -49,7 +53,68 @@ class UnsupportedFormatError extends Error {
 
 /** Formats where every identifying character can actually be removed. */
 function canRedact(mimeType) {
-    return typeof mimeType === "string" && mimeType.startsWith("text/");
+    if (typeof mimeType !== "string") return false;
+    return mimeType.startsWith("text/") || mimeType === "application/pdf";
+}
+
+// How much to grow each black box, as a fraction of the text height.
+// The position of a phrase inside a text run is estimated from character
+// offsets, which is close but not exact in a proportional font. Growing
+// the box biases the error towards covering a little too much, because
+// covering too little means a name is still legible on the page.
+const BOX_PAD = 0.35;
+
+// Render scale for redaction. 2x keeps a scanned page readable after
+// the round trip without making the export enormous.
+const PDF_SCALE = 2;
+
+/**
+ * Where inside a rendered page the identifying text sits.
+ *
+ * Returns one array of rectangles per page, ready to be painted black.
+ */
+function rectsForPages(pages, targets) {
+    return pages.map((page) => {
+        const rects = [];
+
+        for (const item of page.items) {
+            const text = item.str;
+            const preserved = entities.preservedSpans(text);
+
+            const spans = [
+                ...targets.flatMap((t) => literalSpans(text, t)),
+                ...entities.identifyingSpans(text),
+            ].filter((span) => !preserved.some((keep) => overlaps(span, keep)));
+
+            if (spans.length === 0) continue;
+
+            const perChar = text.length > 0 ? item.width / text.length : 0;
+
+            // At least a character and a half of slop on each side. The
+            // average character width is only an average - in a
+            // proportional font "Daughter of " is narrower than the
+            // estimate and the box lands late, leaving the first letter
+            // of the name showing. Erring wide costs a little context;
+            // erring narrow leaves an identity legible on the page.
+            const pad = Math.max(item.height * BOX_PAD, perChar * 1.5);
+
+            for (const span of mergeSpans(spans)) {
+                // A whole run with no measurable width still has to be
+                // covered - fall back to the entire item.
+                const x = perChar > 0 ? item.x + span.start * perChar : item.x;
+                const w = perChar > 0 ? (span.end - span.start) * perChar : item.width;
+
+                rects.push({
+                    x: Math.max(0, x - pad),
+                    y: Math.max(0, item.y - item.height * 0.25),
+                    width: w + pad * 2,
+                    height: item.height * 1.5,
+                });
+            }
+        }
+
+        return rects;
+    });
 }
 
 const isWordChar = (ch) => ch !== undefined && /[\p{L}\p{N}]/u.test(ch);
@@ -121,17 +186,43 @@ function targetsFrom({ identities = [], extracted = null } = {}) {
 /**
  * Redact a copy.
  *
- * Returns { buffer, removed }. The count is not decoration - the audit
- * entry for a redacted export records how many identities were removed,
- * so a zero on a protected case is a signal worth seeing.
+ * Async because a PDF has to be rendered to find and cover the text.
+ * Returns { buffer, removed }.
  *
  * Throws UnsupportedFormatError for anything that cannot be redacted
  * completely. Callers must turn that into a refusal, never a fallback
  * to sending the original.
  */
-function redact(buffer, mimeType, targets = []) {
+async function redact(buffer, mimeType, targets = []) {
     if (!canRedact(mimeType)) throw new UnsupportedFormatError(mimeType);
 
+    if (mimeType === "application/pdf") return redactPdf(buffer, targets);
+    return redactText(buffer, targets);
+}
+
+/**
+ * PDF: locate the text on the page, then rebuild the document from
+ * images with those areas painted out.
+ *
+ * Two things have to be true for this to be real redaction, and both
+ * are, by construction:
+ *   - the characters are gone, because the output has no text layer at
+ *     all; it is images. Copy-paste from it returns nothing.
+ *   - the pixels are gone, because the areas are filled before the page
+ *     is ever encoded.
+ */
+async function redactPdf(buffer, targets) {
+    const pdf = require("./pdf");
+
+    const pages = await pdf.textBoxes(buffer, PDF_SCALE);
+    const rects = rectsForPages(pages, targets);
+    const removed = rects.reduce((n, r) => n + r.length, 0);
+
+    const out = await pdf.renderRedactedPdf(buffer, rects, PDF_SCALE);
+    return { buffer: out, removed };
+}
+
+function redactText(buffer, targets) {
     const text = buffer.toString("utf8");
 
     // Things a court needs. Nothing below is allowed to eat these.

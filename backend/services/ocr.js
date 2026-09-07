@@ -170,7 +170,52 @@ async function recognise(buffer) {
     };
 }
 
-/** Image types the pipeline can read. */
+/**
+ * Read a PDF.
+ *
+ * The text layer first. A PDF produced by a word processor already
+ * carries its text exactly, and running OCR over a rendering of perfect
+ * text would only introduce mistakes. A scanned PDF has no text layer,
+ * and only then is each page rendered and recognised.
+ */
+async function recognisePdf(buffer) {
+    const pdf = require("./pdf");
+
+    const { text, pageCount } = await pdf.extractText(buffer);
+
+    if (pdf.hasUsefulText(text)) {
+        return {
+            text,
+            confidence: 100, // read, not guessed
+            skew: 0,
+            languages: "embedded text layer",
+            pages: pageCount,
+            source: "text-layer",
+        };
+    }
+
+    // A scan. Render and recognise each page.
+    const pages = await pdf.renderPages(buffer, 2);
+    const parts = [];
+    let confidenceTotal = 0;
+
+    for (const page of pages) {
+        const result = await recognise(page.png);
+        parts.push(result.text);
+        confidenceTotal += result.confidence ?? 0;
+    }
+
+    return {
+        text: parts.join("\n\n").trim(),
+        confidence: pages.length ? confidenceTotal / pages.length : null,
+        skew: 0,
+        languages: LANGS,
+        pages: pages.length,
+        source: "ocr",
+    };
+}
+
+/** Image types the pipeline can read directly. */
 function canRead(mimeType) {
     return (
         typeof mimeType === "string" &&
@@ -180,4 +225,9 @@ function canRead(mimeType) {
     );
 }
 
-module.exports = { recognise, preprocess, estimateSkew, canRead, shutdown, LANGS };
+/** Everything the pipeline can get text out of, images and PDFs alike. */
+function canExtract(mimeType) {
+    return canRead(mimeType) || mimeType === "application/pdf";
+}
+
+module.exports = { recognise, recognisePdf, preprocess, estimateSkew, canRead, canExtract, shutdown, LANGS };

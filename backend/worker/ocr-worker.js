@@ -69,7 +69,7 @@ async function processOne(row) {
     // Not an image - there is nothing for this pipeline to read. Mark it
     // done rather than failed: a PDF or a text file is not an error, it
     // just is not OCR work.
-    if (!ocr.canRead(row.mime_type)) {
+    if (!ocr.canExtract(row.mime_type)) {
         if (String(row.mime_type || "").startsWith("text/")) {
             // A text upload already is its own extracted text, so index
             // it and run the entity rules over it.
@@ -97,7 +97,13 @@ async function processOne(row) {
     // Decrypt in memory. Nothing below writes it anywhere.
     const plaintext = await storage.retrieve(row);
 
-    const result = await ocr.recognise(plaintext);
+    // A PDF may already carry its text, in which case it is read rather
+    // than recognised - exact, and far quicker than rendering it.
+    const result =
+        row.mime_type === "application/pdf"
+            ? await ocr.recognisePdf(plaintext)
+            : await ocr.recognise(plaintext);
+
     const found = entities.extract(result.text);
 
     await db.query(
@@ -106,13 +112,23 @@ async function processOne(row) {
                 entities       = $2,
                 ocr_status     = 'done'
           WHERE id = $3`,
-        [result.text, { ...found, confidence: result.confidence, skew: result.skew }, row.id]
+        [
+            result.text,
+            {
+                ...found,
+                confidence: result.confidence,
+                skew: result.skew,
+                source: result.source || "ocr",
+            },
+            row.id,
+        ]
     );
 
     console.log(
         `  version ${row.id}: ${result.text.length} chars, ` +
-        `confidence ${Math.round(result.confidence ?? 0)}, skew ${result.skew}, ` +
-        `${found.persons.length} persons`
+        `confidence ${Math.round(result.confidence ?? 0)}` +
+        (result.source ? `, via ${result.source}` : `, skew ${result.skew}`) +
+        `, ${found.persons.length} persons`
     );
 }
 

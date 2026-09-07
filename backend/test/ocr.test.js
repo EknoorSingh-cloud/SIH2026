@@ -105,6 +105,57 @@ test("recognised text feeds the entity rules layer", async () => {
     );
 });
 
+test("a redacted PDF has the names blacked out of the PIXELS, not just the text layer", async () => {
+    // This is the check that matters, and the one that is easy to get
+    // wrong. Asserting the released file has no text layer proves very
+    // little on its own: the output is rebuilt from images, so it never
+    // has one. The identity can still be sitting there in plain sight
+    // as pixels. The only honest test is to read the released page back
+    // the way a human would - with OCR - and look for the name.
+    const { PDFDocument, StandardFonts } = require("pdf-lib");
+    const redaction = require("../services/redaction");
+    const pdfSvc = require("../services/pdf");
+    const entities = require("../services/entities");
+
+    const doc = await PDFDocument.create();
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const page = doc.addPage([595, 842]);
+    [
+        "FIR No. 198 of 2026",
+        "Under BNS Section 74 and Section 72",
+        "Complainant Sunita Sharma",
+        "Daughter of Ramesh Sharma",
+        "Resident of 14 Nehru Road",
+        "Phone 9876543210",
+    ].forEach((t, i) => page.drawText(t, { x: 60, y: 760 - i * 28, size: 16, font }));
+
+    const original = Buffer.from(await doc.save());
+
+    // Targets come from the pipeline itself rather than being written
+    // out by hand, so a regression in extraction fails this too.
+    const extracted = await pdfSvc.extractText(original);
+    const targets = redaction.targetsFrom({ extracted: entities.extract(extracted.text) });
+
+    const { buffer } = await redaction.redact(original, "application/pdf", targets);
+
+    const pages = await pdfSvc.renderPages(buffer, 2);
+    const read = await ocr.recognise(pages[0].png);
+    const flat = read.text.replace(/\s+/g, " ");
+
+    console.log(`        read back: ${JSON.stringify(flat.slice(0, 80))}`);
+
+    for (const leak of ["Sunita", "Ramesh", "Nehru", "9876543210"]) {
+        assert.ok(
+            !flat.includes(leak),
+            `"${leak}" is still legible on the released page: ${JSON.stringify(flat)}`
+        );
+    }
+
+    // And the evidence must survive - a redactor that blacks out the
+    // whole page would otherwise pass the assertions above.
+    assert.ok(/198|2026/.test(flat), `FIR number was lost: ${JSON.stringify(flat)}`);
+});
+
 (async () => {
     let failed = 0;
 
