@@ -34,6 +34,23 @@ const GROUPS = [
     { key: "phones", label: "Phones", identifying: true },
 ];
 
+// How sure the reader is, and what that means for the officer reading
+// this screen. It is not trivia: everything redaction removes is found
+// in this text, so a badly-read page is a page whose names may not have
+// been found - and on a protected case that is the thing to know before
+// releasing anything.
+function confidenceBand(value) {
+    if (value === null || value === undefined) return null;
+    if (value >= 85) return { label: "high", tone: "ok" };
+    if (value >= 60) return { label: "fair", tone: "warn" };
+    return { label: "low", tone: "bad" };
+}
+
+const SOURCE_TEXT = {
+    "text-layer": "read directly from the PDF, not guessed",
+    ocr: "recognised from the image",
+};
+
 export default function ExtractedText({ documentId, ocrStatus }) {
     const [data, setData] = useState(null);
     const [error, setError] = useState(null);
@@ -103,6 +120,34 @@ export default function ExtractedText({ documentId, ocrStatus }) {
                 </span>
                 {inFlight && " - this page updates itself"}
             </p>
+
+            {data && data.entities && data.entities.confidence !== undefined &&
+                data.entities.confidence !== null && (() => {
+                    const value = Math.round(data.entities.confidence);
+                    const band = confidenceBand(value);
+                    const source = data.entities.source;
+
+                    return (
+                        <div className="reading-quality">
+                            <span className="entity-label">Reading quality</span>
+                            <span className={`chip chip-${band.tone}`}>
+                                {value}% - {band.label}
+                            </span>
+                            {source && (
+                                <span className="muted">{SOURCE_TEXT[source] || source}</span>
+                            )}
+                        </div>
+                    );
+                })()}
+
+            {data && data.entities && confidenceBand(data.entities.confidence)?.tone === "bad" && (
+                <div className="alert alert-warn">
+                    <ShieldAlert size={14} /> This page was read poorly, so the details
+                    below are probably incomplete. Everything redaction removes is found
+                    in this text - on a protected case, check the identities registered
+                    on the case before releasing anything.
+                </div>
+            )}
 
             {error && <div className="alert alert-error">{error}</div>}
 

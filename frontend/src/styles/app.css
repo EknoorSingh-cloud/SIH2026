@@ -268,6 +268,31 @@
     color: var(--bad);
 }
 
+/* How well the page was read. Colour carries the same meaning as
+   everywhere else: green fine, amber look at it, red do not trust it. */
+.reading-quality {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 12px 0;
+}
+
+.chip-ok {
+    background: var(--ok-bg);
+    color: var(--ok);
+}
+
+.chip-warn {
+    background: var(--warn-bg);
+    color: var(--warn);
+}
+
+.chip-bad {
+    background: var(--bad-bg);
+    color: var(--bad);
+}
+
 .ocr-text {
     background: #fafbfd;
     border: 1px solid var(--line);
