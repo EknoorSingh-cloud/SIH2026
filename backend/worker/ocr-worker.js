@@ -27,6 +27,7 @@ const entities = require("../services/entities");
 
 const BATCH = Number(process.env.OCR_BATCH || 5);
 const IDLE_MS = Number(process.env.OCR_POLL_MS || 5000);
+const STALE_MINUTES = Number(process.env.OCR_STALE_MINUTES || 15);
 
 let stopping = false;
 
@@ -38,12 +39,11 @@ async function claimBatch() {
     // nothing. Moving the rows to 'processing' in the same UPDATE that
     // returns them is what makes running two workers safe.
     //
-    // ponytail: a worker killed mid-document leaves its rows in
-    // 'processing' forever. Add a reaper (reset 'processing' older than
-    // N minutes back to 'pending') if that starts happening.
+    // The claim time is what lets reapStale() tell a document that is
+    // genuinely being read from one whose reader died holding it.
     const { rows } = await db.query(
         `UPDATE document_versions
-            SET ocr_status = 'processing'
+            SET ocr_status = 'processing', ocr_started_at = now()
           WHERE id IN (
                 SELECT id
                   FROM document_versions
@@ -56,6 +56,31 @@ async function claimBatch() {
         [BATCH]
     );
     return rows;
+}
+
+// A reader that is killed mid-document leaves its row claimed. Nothing
+// ever went back for those: the queue only picks up 'pending', so the
+// document sat on "being read now" forever with no error to show for
+// it - which is exactly how one turned up stuck.
+//
+// Anything held longer than the timeout is assumed abandoned and put
+// back. The timeout is generous because a long scanned PDF genuinely
+// takes minutes, and reclaiming a document that is still being read
+// would only mean it gets read twice.
+async function reapStale() {
+    const { rowCount } = await db.query(
+        `UPDATE document_versions
+            SET ocr_status = 'pending', ocr_started_at = NULL
+          WHERE ocr_status = 'processing'
+            AND (ocr_started_at IS NULL
+                 OR ocr_started_at < now() - ($1 || ' minutes')::interval)`,
+        [STALE_MINUTES]
+    );
+
+    if (rowCount) {
+        console.log(`  reclaimed ${rowCount} document(s) abandoned by a previous run`);
+    }
+    return rowCount;
 }
 
 async function markFailed(id, reason) {
@@ -133,6 +158,8 @@ async function processOne(row) {
 }
 
 async function tick() {
+    await reapStale().catch((e) => console.error("reap failed:", e.message));
+
     const rows = await claimBatch();
     if (rows.length === 0) return 0;
 
