@@ -167,6 +167,56 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /cases/{case_id}/protected-identities:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [cases]
+      summary: >
+        Identities redaction removes from every export on this case.
+        Readable only by officers assigned to the case. Never exported.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProtectedIdentity'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [cases]
+      summary: >
+        Flag an identity as protected. Deciding who counts is an
+        investigative judgement, so this needs case.assign.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [value]
+              properties:
+                value:
+                  type: string
+                kind:
+                  type: string
+                  enum: [name, address, phone, relationship]
+                  default: name
+      responses:
+        '201':
+          description: Registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProtectedIdentity'
+        '400':
+          description: value is required
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /documents:
     post:
       tags: [documents]
@@ -202,6 +252,43 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '413':
           description: File too large
+
+  /documents/search:
+    get:
+      tags: [documents]
+      summary: >
+        Full-text search over OCR-extracted text. Results are restricted
+        to cases the caller is assigned to, so a search can never reveal
+        that a document exists in a case they are not on. Every search is
+        written to the audit log.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SearchHit'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  per_page:
+                    type: integer
+        '400':
+          description: q is required
 
   /documents/{document_id}:
     parameters:
@@ -342,6 +429,83 @@ paths:
         '409':
           description: Cannot issue a certificate for an unverified document
 
+  /documents/{document_id}/text:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: >
+        OCR output and the entities extracted from it. On a protected
+        case the text is redacted and the identifying entity lists
+        (persons, addresses, phones) are not returned at all; when
+        redaction is unavailable this refuses with 503 rather than
+        releasing the text.
+      parameters:
+        - name: version
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: integer
+                  ocr_status:
+                    type: string
+                    enum: [pending, processing, done, failed]
+                  redacted:
+                    type: boolean
+                  text:
+                    type: string
+                  entities:
+                    $ref: '#/components/schemas/Entities'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Protected case and redaction is unavailable
+
+  /documents/{document_id}/custody:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [documents]
+      summary: >
+        Chain of custody straight off the ledger - every write to this
+        version's key, oldest first. On the Fabric backend this is
+        GetHistoryForKey and no single organisation can edit it.
+      parameters:
+        - name: version
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ledger_backend:
+                    type: string
+                    enum: [fabric, stub]
+                    description: >
+                      "stub" is in-memory and proves nothing. Check this
+                      before presenting the result as a blockchain.
+                  version:
+                    type: integer
+                  entries:
+                    type: array
+                    items:
+                      type: object
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /documents/{document_id}/audit:
     parameters:
       - $ref: '#/components/parameters/DocumentId'
@@ -365,6 +529,81 @@ paths:
                       $ref: '#/components/schemas/AuditEntry'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  # ---------------------------------------------------------------
+  # ICJS exchange. MOCK - fixture-backed, no live CCTNS connection.
+  # Every response carries "mock": true.
+  # ---------------------------------------------------------------
+
+  /icjs/fir:
+    get:
+      tags: [icjs]
+      summary: >
+        FIR reference lookup against ICJS. Fixture-backed mock.
+        The FIR number is a query parameter, not a path segment, because
+        FIR numbers contain slashes and an encoded %2F in a path is
+        normalised or rejected by most reverse proxies.
+      parameters:
+        - name: fir_number
+          in: query
+          required: true
+          schema:
+            type: string
+          example: FIR/0142/2026
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcjsFir'
+        '400':
+          description: fir_number is required
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /icjs/cases/{case_id}/link:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [icjs]
+      summary: >
+        Link a case to an FIR held in CCTNS. Returns the acknowledgement
+        ICJS would return; persists nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fir_number]
+              properties:
+                fir_number:
+                  type: string
+      responses:
+        '200':
+          description: Linked
+        '400':
+          description: fir_number is required
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /icjs/documents/{document_id}/payload:
+    parameters:
+      - $ref: '#/components/parameters/DocumentId'
+    get:
+      tags: [icjs]
+      summary: >
+        The exact metadata payload that would be pushed to ICJS for this
+        document. Read-only; transmits nothing. Carries a pointer and a
+        hash, never the file, its text, or any victim data.
+      responses:
+        '200':
+          description: OK
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
 components:
 
@@ -419,6 +658,138 @@ components:
         "protected" triggers mandatory redaction on every export path,
         for offences covered by Section 72 BNS.
       enum: [normal, restricted, protected]
+
+    Entities:
+      type: object
+      description: >
+        Output of the entity rules (F4). The identifying lists feed
+        redaction; the evidentiary ones are preserved through it and are
+        the only ones returned for a protected case.
+      properties:
+        persons:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        addresses:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        phones:
+          type: array
+          description: Identifying. Absent on a protected case.
+          items:
+            type: string
+        fir_numbers:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        sections:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        dates:
+          type: array
+          description: Evidentiary. Never redacted.
+          items:
+            type: string
+        confidence:
+          type: number
+          nullable: true
+          description: OCR confidence, 0-100.
+
+    ProtectedIdentity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        value:
+          type: string
+        kind:
+          type: string
+          enum: [name, address, phone, relationship]
+        added_at:
+          type: string
+          format: date-time
+
+    SearchHit:
+      type: object
+      properties:
+        document_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        doc_type:
+          $ref: '#/components/schemas/DocType'
+        case_id:
+          type: string
+          format: uuid
+        case_number:
+          type: string
+        sensitivity:
+          $ref: '#/components/schemas/Sensitivity'
+        version:
+          type: integer
+        uploaded_at:
+          type: string
+          format: date-time
+        snippet:
+          type: string
+          nullable: true
+          description: >
+            Null on a "protected" case until the redaction service is
+            live. The extracted text of a Section 72 document contains
+            exactly the victim identity redaction exists to remove, and a
+            search result is an export path like any other. The hit still
+            appears; the text does not.
+
+    IcjsFir:
+      type: object
+      description: FIR reference held in CCTNS. Fixture-backed mock.
+      properties:
+        fir_number:
+          type: string
+          example: FIR/0142/2026
+        cctns_id:
+          type: string
+        police_station:
+          type: string
+        district:
+          type: string
+        state:
+          type: string
+        registered_on:
+          type: string
+          format: date-time
+        act:
+          type: string
+        sections:
+          type: array
+          items:
+            type: string
+        investigating_officer:
+          type: object
+          properties:
+            name:
+              type: string
+            service_number:
+              type: string
+            rank:
+              $ref: '#/components/schemas/Rank'
+        status:
+          type: string
+        accused_count:
+          type: integer
+        source:
+          type: string
+        mock:
+          type: boolean
+          description: Always true until a real ICJS connection exists.
 
     User:
       type: object

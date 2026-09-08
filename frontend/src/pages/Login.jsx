@@ -1,453 +1,154 @@
-// import { useState } from "react";
-// import { useNavigate } from "react-router-dom";
-// import {
-//   Lock,
-//   Mail,
-//   Eye,
-//   EyeOff,
-//   ShieldCheck,
-//   ArrowRight,
-// } from "lucide-react";
-
-// function Login() {
-//   const navigate = useNavigate();
-
-//   const [showPassword, setShowPassword] = useState(false);
-//   const [rememberMe, setRememberMe] = useState(false);
-
-//   const handleLogin = (e) => {
-//     e.preventDefault();
-
-//     // Temporary frontend login
-//     navigate("/dashboard");
-//   };
-
-//   return (
-//     <div className="login-page">
-//       {/* LEFT SIDE */}
-//       <div className="login-brand-section">
-//         <div className="brand-content">
-//           <div className="brand-logo">
-//             <ShieldCheck size={32} />
-//           </div>
-
-//           <h1>SecureDocs</h1>
-
-//           <h2>
-//             Your documents.
-//             <br />
-//             <span>Securely managed.</span>
-//           </h2>
-
-//           <p>
-//             A secure digital document management platform designed to
-//             organize, protect, and manage important documents.
-//           </p>
-
-//           <div className="security-features">
-//             <div>
-//               <ShieldCheck size={18} />
-//               <span>Secure Document Storage</span>
-//             </div>
-
-//             <div>
-//               <Lock size={18} />
-//               <span>Protected User Access</span>
-//             </div>
-//           </div>
-//         </div>
-
-//         <div className="login-brand-footer">
-//           © 2026 SecureDocs
-//         </div>
-//       </div>
-
-//       {/* RIGHT SIDE */}
-//       <div className="login-form-section">
-//         <div className="login-card premium-login-card">
-//           <div className="login-header">
-//             <p className="login-welcome">WELCOME BACK</p>
-
-//             <h1>Sign in to SecureDocs</h1>
-
-//             <p>
-//               Enter your details below to access your secure workspace.
-//             </p>
-//           </div>
-
-//           <form onSubmit={handleLogin}>
-//             {/* EMAIL */}
-//             <div className="input-group">
-//               <label>Email Address</label>
-
-//               <div className="input-wrapper">
-//                 <Mail size={18} />
-
-//                 <input
-//                   type="email"
-//                   placeholder="name@example.com"
-//                   required
-//                 />
-//               </div>
-//             </div>
-
-//             {/* PASSWORD */}
-//             <div className="input-group">
-//               <label>Password</label>
-
-//               <div className="input-wrapper password-wrapper">
-//                 <Lock size={18} />
-
-//                 <input
-//                   type={showPassword ? "text" : "password"}
-//                   placeholder="Enter your password"
-//                   required
-//                 />
-
-//                 <button
-//                   type="button"
-//                   className="password-toggle"
-//                   onClick={() => setShowPassword(!showPassword)}
-//                 >
-//                   {showPassword ? (
-//                     <EyeOff size={18} />
-//                   ) : (
-//                     <Eye size={18} />
-//                   )}
-//                 </button>
-//               </div>
-//             </div>
-
-//             {/* REMEMBER */}
-//             <div className="login-options">
-//               <label className="remember-me">
-//                 <input
-//                   type="checkbox"
-//                   checked={rememberMe}
-//                   onChange={(e) =>
-//                     setRememberMe(e.target.checked)
-//                   }
-//                 />
-
-//                 <span>Remember me</span>
-//               </label>
-
-//               <button
-//                 type="button"
-//                 className="forgot-password"
-//               >
-//                 Forgot password?
-//               </button>
-//             </div>
-
-//             {/* LOGIN */}
-//             <button type="submit" className="login-button">
-//               Sign In
-//               <ArrowRight size={18} />
-//             </button>
-//           </form>
-
-//           <div className="login-security-note">
-//             <ShieldCheck size={16} />
-//             Your connection is secure and encrypted.
-//           </div>
-//         </div>
-//       </div>
-//     </div>
-//   );
-// }
-
-// export default Login;
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  Lock,
-  Eye,
-  EyeOff,
-  ShieldCheck,
-  ArrowRight,
-  User,
-  AlertCircle,
-} from "lucide-react";
+import { Lock, User, ShieldCheck } from "lucide-react";
 
-function Login() {
-  const navigate = useNavigate();
+import * as api from "../api/client";
+import { useAuth } from "../auth-context";
 
-  const [serviceNumber, setServiceNumber] = useState("");
-  const [password, setPassword] = useState("");
+// ---------------------------------------------------------------
+// Screen 1: password, then the MFA challenge.
+//
+// Two steps, because the backend issues a short-lived mfa_token from
+// /auth/login and only exchanges it for a real session at
+// /auth/mfa/verify. A password alone gets you nothing.
+// ---------------------------------------------------------------
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(false);
+export default function Login() {
+    const navigate = useNavigate();
+    const { signIn } = useAuth();
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+    const [stage, setStage] = useState("password");
+    const [serviceNumber, setServiceNumber] = useState("");
+    const [password, setPassword] = useState("");
+    const [code, setCode] = useState("");
+    const [mfaToken, setMfaToken] = useState(null);
+    const [error, setError] = useState(null);
+    const [busy, setBusy] = useState(false);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-
-    setError("");
-    setLoading(true);
-
-    try {
-      const response = await fetch(
-        "http://localhost:5000/api/v1/auth/login",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-          body: JSON.stringify({
-            service_number: serviceNumber,
-            password: password,
-          }),
+    async function submitPassword(e) {
+        e.preventDefault();
+        setError(null);
+        setBusy(true);
+        try {
+            const res = await api.login(serviceNumber.trim(), password);
+            setMfaToken(res.mfa_token);
+            setStage("mfa");
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setBusy(false);
         }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || "Login failed.");
-      }
-
-      /*
-        Backend returns an MFA token.
-
-        We temporarily store it so the MFA page
-        can verify the authentication code.
-      */
-
-      if (rememberMe) {
-        localStorage.setItem("mfa_token", data.mfa_token);
-      } else {
-        sessionStorage.setItem("mfa_token", data.mfa_token);
-      }
-
-      navigate("/mfa");
-    } catch (err) {
-      setError(err.message || "Unable to connect to the server.");
-    } finally {
-      setLoading(false);
     }
-  };
 
-  return (
-    <div className="login-page">
+    async function submitMfa(e) {
+        e.preventDefault();
+        setError(null);
+        setBusy(true);
+        try {
+            const res = await api.verifyMfa(mfaToken, code.trim());
+            await signIn(res.session_token, res.user);
+            navigate("/cases", { replace: true });
+        } catch (err) {
+            setError(err.message);
+            // A dead or spent mfa_token cannot be retried, so send the
+            // user back to the password step rather than stranding them
+            // on a form that will keep failing.
+            if (err.status === 401) {
+                setStage("password");
+                setCode("");
+                setMfaToken(null);
+            }
+        } finally {
+            setBusy(false);
+        }
+    }
 
-      {/* LEFT SIDE */}
-      <div className="login-brand-section">
+    return (
+        <div className="login-page">
+            <div className="login-card">
+                <div className="login-header">
+                    <div className="login-icon">
+                        {stage === "password" ? <Lock size={35} /> : <ShieldCheck size={35} />}
+                    </div>
+                    <h1>NYAYAKOSH</h1>
+                    <p>Secure Legal Document Management</p>
+                </div>
 
-        <div className="brand-content">
+                {error && <div className="alert alert-error">{error}</div>}
 
-          <div className="brand-logo">
-            <ShieldCheck size={32} />
-          </div>
+                {stage === "password" ? (
+                    <form onSubmit={submitPassword}>
+                        <div className="input-group">
+                            <label>Service number</label>
+                            <div className="input-wrapper">
+                                <User size={18} />
+                                <input
+                                    value={serviceNumber}
+                                    onChange={(e) => setServiceNumber(e.target.value)}
+                                    placeholder="DL-INS-1001"
+                                    autoComplete="username"
+                                    required
+                                />
+                            </div>
+                        </div>
 
-          <h1>SecureDocs</h1>
+                        <div className="input-group">
+                            <label>Password</label>
+                            <div className="input-wrapper">
+                                <Lock size={18} />
+                                <input
+                                    type="password"
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    autoComplete="current-password"
+                                    required
+                                />
+                            </div>
+                        </div>
 
-          <h2>
-            Your documents.
-            <br />
-            <span>Securely managed.</span>
-          </h2>
+                        <button type="submit" className="login-button" disabled={busy}>
+                            {busy ? "Checking..." : "Continue"}
+                        </button>
+                    </form>
+                ) : (
+                    <form onSubmit={submitMfa}>
+                        <p className="mfa-hint">
+                            Enter the 6-digit code from your authenticator app.
+                        </p>
 
-          <p>
-            A secure digital document management platform designed to
-            organize, protect, and manage important documents.
-          </p>
+                        <div className="input-group">
+                            <label>Authentication code</label>
+                            <div className="input-wrapper">
+                                <ShieldCheck size={18} />
+                                <input
+                                    value={code}
+                                    onChange={(e) => setCode(e.target.value)}
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    maxLength={6}
+                                    autoComplete="one-time-code"
+                                    autoFocus
+                                    required
+                                />
+                            </div>
+                        </div>
 
-          <div className="security-features">
-
-            <div>
-              <ShieldCheck size={18} />
-              <span>Secure Document Storage</span>
+                        <button type="submit" className="login-button" disabled={busy}>
+                            {busy ? "Verifying..." : "Verify"}
+                        </button>
+                        <button
+                            type="button"
+                            className="link-button"
+                            onClick={() => {
+                                setStage("password");
+                                setError(null);
+                            }}
+                        >
+                            Back
+                        </button>
+                    </form>
+                )}
             </div>
-
-            <div>
-              <Lock size={18} />
-              <span>Protected User Access</span>
-            </div>
-
-          </div>
-
         </div>
-
-        <div className="login-brand-footer">
-          © 2026 SecureDocs
-        </div>
-
-      </div>
-
-
-      {/* RIGHT SIDE */}
-      <div className="login-form-section">
-
-        <div className="login-card premium-login-card">
-
-          <div className="login-header">
-
-            <p className="login-welcome">
-              WELCOME BACK
-            </p>
-
-            <h1>Sign in to SecureDocs</h1>
-
-            <p>
-              Enter your credentials below to access your secure workspace.
-            </p>
-
-          </div>
-
-
-          {/* ERROR MESSAGE */}
-
-          {error && (
-            <div className="login-error">
-
-              <AlertCircle size={18} />
-
-              <span>{error}</span>
-
-            </div>
-          )}
-
-
-          <form onSubmit={handleLogin}>
-
-
-            {/* SERVICE NUMBER */}
-
-            <div className="input-group">
-
-              <label>Service Number</label>
-
-              <div className="input-wrapper">
-
-                <User size={18} />
-
-                <input
-                  type="text"
-                  placeholder="Enter your service number"
-                  value={serviceNumber}
-                  onChange={(e) =>
-                    setServiceNumber(e.target.value)
-                  }
-                  required
-                />
-
-              </div>
-
-            </div>
-
-
-            {/* PASSWORD */}
-
-            <div className="input-group">
-
-              <label>Password</label>
-
-              <div className="input-wrapper password-wrapper">
-
-                <Lock size={18} />
-
-                <input
-                  type={showPassword ? "text" : "password"}
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) =>
-                    setPassword(e.target.value)
-                  }
-                  required
-                />
-
-                <button
-                  type="button"
-                  className="password-toggle"
-                  onClick={() =>
-                    setShowPassword(!showPassword)
-                  }
-                >
-
-                  {showPassword ? (
-                    <EyeOff size={18} />
-                  ) : (
-                    <Eye size={18} />
-                  )}
-
-                </button>
-
-              </div>
-
-            </div>
-
-
-            {/* REMEMBER */}
-
-            <div className="login-options">
-
-              <label className="remember-me">
-
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) =>
-                    setRememberMe(e.target.checked)
-                  }
-                />
-
-                <span>Remember me</span>
-
-              </label>
-
-
-              <button
-                type="button"
-                className="forgot-password"
-              >
-                Forgot password?
-              </button>
-
-            </div>
-
-
-            {/* LOGIN BUTTON */}
-
-            <button
-              type="submit"
-              className="login-button"
-              disabled={loading}
-            >
-
-              {loading ? (
-                <>
-                  Signing In...
-                </>
-              ) : (
-                <>
-                  Sign In
-                  <ArrowRight size={18} />
-                </>
-              )}
-
-            </button>
-
-          </form>
-
-
-          <div className="login-security-note">
-
-            <ShieldCheck size={16} />
-
-            Your connection is secure and encrypted.
-
-          </div>
-
-        </div>
-
-      </div>
-
-    </div>
-  );
+    );
 }
-
-export default Login;

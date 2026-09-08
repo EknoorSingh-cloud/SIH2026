@@ -49,7 +49,7 @@ CREATE TYPE doc_type_t AS ENUM (
 );
 
 CREATE TYPE anchor_status_t AS ENUM ('pending', 'anchored', 'failed');
-CREATE TYPE ocr_status_t    AS ENUM ('pending', 'done', 'failed');
+CREATE TYPE ocr_status_t    AS ENUM ('pending', 'processing', 'done', 'failed');
 
 CREATE TYPE audit_action_t AS ENUM (
   'upload',
@@ -58,6 +58,7 @@ CREATE TYPE audit_action_t AS ENUM (
   'export_redacted',
   'new_version',
   'verify',
+  'search',          -- searching reveals what exists; it is an access event
   'share',
   'access_denied'
 );
@@ -124,6 +125,29 @@ CREATE TABLE case_assignments (
 
 CREATE INDEX ON case_assignments (user_id);
 
+-- Identities redaction removes from every export on a protected case:
+-- the victim, their parent or spouse, their address, their number.
+--
+-- This is how redaction knows a name belongs to a victim without a
+-- model - the investigating officer says so.
+--
+-- WARNING: these rows ARE the protected identities. Readable only by
+-- officers assigned to the case, never exported, never logged.
+CREATE TABLE case_protected_identities (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  case_id     UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+
+  value       TEXT NOT NULL,
+  kind        TEXT NOT NULL DEFAULT 'name',   -- name | address | phone | relationship
+
+  added_by    UUID NOT NULL REFERENCES users(id),
+  added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+  UNIQUE (case_id, value)
+);
+
+CREATE INDEX ON case_protected_identities (case_id);
+
 -- ---------------------------------------------------------------
 -- Documents
 --
@@ -175,6 +199,10 @@ CREATE TABLE document_versions (
 
   ocr_status     ocr_status_t NOT NULL DEFAULT 'pending',
   extracted_text TEXT,
+
+  -- Entity extraction output (F4). Redaction reads persons/addresses
+  -- from here; fir_numbers/sections/dates are evidence and are kept.
+  entities       JSONB,
 
   -- A given version number can only ever exist once per document.
   UNIQUE (document_id, version)

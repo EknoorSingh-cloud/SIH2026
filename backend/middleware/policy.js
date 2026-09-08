@@ -81,6 +81,20 @@ async function isAssigned(userId, caseId) {
     return rows.length > 0;
 }
 
+// Resolve the case a document belongs to, so requirePermission can run
+// its assignment check on a route that only knows a document id.
+//
+// This lives here rather than in a router because more than one router
+// needs it and its answer feeds an access decision. A second copy that
+// drifts from this one is a hole in the ABAC check.
+async function caseIdForDocument(req) {
+    const { rows } = await db.query(
+        "SELECT case_id FROM documents WHERE id = $1",
+        [req.params.document_id]
+    );
+    return rows[0] ? rows[0].case_id : null;
+}
+
 /**
  * The single access decision.
  * Returns { allowed: boolean, reason: string|null }
@@ -152,4 +166,4 @@ function requirePermission(action, getCaseId) {
     };
 }
 
-module.exports = { can, requirePermission, PERMISSIONS };
+module.exports = { can, requirePermission, caseIdForDocument, PERMISSIONS };
