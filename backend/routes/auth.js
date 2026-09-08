@@ -105,11 +105,18 @@ router.post("/mfa/verify", async (req, res, next) => {
 
     const pending = pendingMfa.get(mfa_token);
 
+    // Distinct codes for two very different situations. A mistyped or
+    // expired six-digit code means try again with a fresh one; a dead
+    // challenge means start over from the password. Both used to return
+    // "unauthorized", so the screen could not tell them apart and sent
+    // people back to the password step for a stale code - where the
+    // next thing they saw was a credentials error for a password that
+    // had never been wrong.
     if (!pending || pending.expiresAt < Date.now()) {
         pendingMfa.delete(mfa_token);
         return res.status(401).json({
-            error: "unauthorized",
-            message: "Challenge expired. Log in again.",
+            error: "challenge_expired",
+            message: "This sign-in attempt timed out. Enter your password again.",
         });
     }
 
@@ -122,9 +129,15 @@ router.post("/mfa/verify", async (req, res, next) => {
         const user = rows[0];
 
         if (user.mfa_enabled && !verifyTotp(user.mfa_secret, code)) {
-            return res
-                .status(401)
-                .json({ error: "unauthorized", message: "Invalid code." });
+            // The challenge is deliberately left alive so the officer can
+            // simply read a fresh code and try again. Codes change every
+            // thirty seconds and being typed a moment too late is by far
+            // the most common reason to land here.
+            return res.status(401).json({
+                error: "invalid_code",
+                message:
+                    "That code was not accepted. Codes change every 30 seconds - get a fresh one and enter it straight away.",
+            });
         }
 
         // One code, one use.

@@ -50,13 +50,18 @@ export default function Login() {
             navigate("/cases", { replace: true });
         } catch (err) {
             setError(err.message);
-            // A dead or spent mfa_token cannot be retried, so send the
-            // user back to the password step rather than stranding them
-            // on a form that will keep failing.
-            if (err.status === 401) {
+
+            // Only a dead challenge sends you back to the password. A
+            // rejected code keeps you here with the field cleared, ready
+            // for a fresh one - bouncing back for a code that was merely
+            // a few seconds stale made it look as though the password
+            // had been wrong, which it never was.
+            if (err.code === "challenge_expired") {
                 setStage("password");
                 setCode("");
                 setMfaToken(null);
+            } else {
+                setCode("");
             }
         } finally {
             setBusy(false);

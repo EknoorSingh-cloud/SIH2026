@@ -91,6 +91,12 @@ const COARSE_STEP = 1.5;
 const FINE_STEP = 0.25;
 const PROBE_WIDTH = 420;
 
+// Below this the tilt is not worth the resampling it would cost.
+// Measured: correcting a 1 degree estimate on an already-level page
+// dropped confidence from 83 to 78 and lost a field. Tesseract copes
+// with a degree of tilt far better than it copes with soft strokes.
+const ROTATE_DEADBAND = 1.5;
+
 async function estimateSkew(source) {
     const probe = source.clone().greyscale();
 
@@ -157,23 +163,44 @@ async function preprocess(buffer, { deskew = true } = {}) {
     //    level by construction. It is the most expensive step here, so
     //    not doing it when it cannot help is most of the speed-up.
     const skew = deskew ? await estimateSkew(image) : 0;
-    if (Math.abs(skew) >= FINE_STEP) image.rotate(skew);
 
-    // 2. greyscale + denoise. A mild blur knocks out scanner speckle;
-    //    anything stronger starts eating thin Devanagari strokes.
+    // Only straighten a page that is actually crooked. Rotating resamples
+    // every pixel, and on a page that was already level that softens the
+    // strokes for nothing - it cost several points of confidence on a
+    // page the estimator had put at a third of a degree. Below the
+    // deadband the tilt is not worth the damage.
+    if (Math.abs(skew) >= ROTATE_DEADBAND) image.rotate(skew);
+
     image.greyscale();
-    image.blur(1);
+
+    // 2. Size before anything else. Tesseract wants roughly 300dpi, and
+    //    a page below that has strokes only a pixel or two wide.
+    //
+    //    THERE IS DELIBERATELY NO DENOISING HERE. There used to be a
+    //    blur, to knock out scanner speckle. Measured on a clean 800px
+    //    FIR it took confidence from 83 to 35 and the number of known
+    //    strings recovered from seven out of seven to NONE - it was
+    //    erasing the text before it could be read. A 3x3 median, the
+    //    right tool for speckle, was just as destructive at this stroke
+    //    width. Neither rescued a genuinely noisy page either.
+    //
+    //    ponytail: denoising only makes sense once strokes are several
+    //    pixels thick. If badly speckled high-resolution scans turn up,
+    //    add a median filter gated on image size - and measure it on a
+    //    real page before keeping it.
+    const target = Number(process.env.OCR_TARGET_WIDTH || 2400);
+    if (image.bitmap.width < target) {
+        // Cap the enlargement: past about 4x there is no more detail to
+        // recover, only pixels to process.
+        const factor = Math.min(4, target / image.bitmap.width);
+        image.resize({ w: Math.round(image.bitmap.width * factor) });
+    }
 
     // 3. contrast. normalize() stretches the histogram, which matters
     //    far more than raw contrast on faded photocopies - and FIRs are
     //    almost always photocopies.
     image.normalize();
     image.contrast(0.3);
-
-    // Small scans recognise better upscaled; tesseract likes ~300dpi.
-    if (image.bitmap.width < 1000) {
-        image.resize({ w: image.bitmap.width * 2 });
-    }
 
     return { buffer: await image.getBuffer("image/png"), skew };
 }
