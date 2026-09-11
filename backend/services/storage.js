@@ -148,14 +148,23 @@ async function store(plaintext) {
  * Throws if the blob has been altered in storage - GCM will not return
  * data that fails its authentication tag.
  */
+//
+// A decryption failure is marked err.integrity, so a caller can tell
+// "the bytes are not what was stored" from "storage did not answer".
+// Only the first is evidence of tampering.
 async function retrieve(row) {
     const ciphertext = await getObject(row.storage_path);
 
-    const dek = unwrapKey(row.wrapped_key);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", dek, row.iv);
-    decipher.setAuthTag(row.auth_tag);
+    try {
+        const dek = unwrapKey(row.wrapped_key);
+        const decipher = crypto.createDecipheriv("aes-256-gcm", dek, row.iv);
+        decipher.setAuthTag(row.auth_tag);
 
-    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+        return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    } catch (err) {
+        err.integrity = true;
+        throw err;
+    }
 }
 
 // Destroy the key, not the file. The blob becomes unreadable noise

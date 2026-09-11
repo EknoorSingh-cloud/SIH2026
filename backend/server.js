@@ -10,8 +10,13 @@ const authRoutes = require("./routes/auth");
 const caseRoutes = require("./routes/cases");
 const documentRoutes = require("./routes/documents");
 const icjsRoutes = require("./routes/icjs");
+const userRoutes = require("./routes/users");
+const notificationRoutes = require("./routes/notifications");
 const ledger = require("./services/ledger");
+const integrity = require("./services/integrity");
+const sms = require("./services/sms");
 const { requireAuth } = require("./middleware/auth");
+const { PERMISSIONS } = require("./middleware/policy");
 
 const app = express();
 
@@ -32,9 +37,14 @@ app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/cases", caseRoutes);
 app.use("/api/v1/documents", documentRoutes);
 app.use("/api/v1/icjs", icjsRoutes);
+app.use("/api/v1/users", userRoutes);
+app.use("/api/v1/notifications", notificationRoutes);
 
+// permissions is what the rank allows, for deciding which controls to
+// show. It is a hint to the screens, never a decision - every route
+// still runs its own check in policy.js.
 app.get("/api/v1/me", requireAuth, (req, res) => {
-    res.json({ user: req.user });
+    res.json({ user: { ...req.user, permissions: PERMISSIONS[req.user.rank] || [] } });
 });
 
 // ---------------------------------------------------------------
@@ -119,6 +129,23 @@ app.listen(PORT, async () => {
         console.log("  (in-memory - not independent, set LEDGER_BACKEND=fabric)");
     }
     if (n) console.log(`  rehydrated ${n} anchors`);
+
+    // After rehydrate, never before: on the stub ledger an anchor that
+    // has not been reloaded yet would look like a missing ledger record
+    // and raise a false tamper alert.
+    integrity.start();
+    console.log(
+        `Integrity check: every ${integrity.SWEEP_MINUTES} minutes on cases under investigation`
+    );
+
+    console.log(`SMS sign-in codes: ${sms.provider}`);
+    if (sms.provider === "console") {
+        console.log(
+            process.env.NODE_ENV === "production"
+                ? "  (console refuses in production - set SMS_PROVIDER, or OTP sign-in will not work)"
+                : "  (development - codes print in this terminal, set SMS_PROVIDER for real SMS)"
+        );
+    }
 
     if (process.env.REDACTION_ENABLED !== "true") {
         console.log("Redaction: DISABLED - protected cases will refuse to export");

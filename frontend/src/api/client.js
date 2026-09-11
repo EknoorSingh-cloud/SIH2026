@@ -123,11 +123,16 @@ async function downloadFile(path, fallbackName) {
 
 // ---- auth ----
 
-export const login = (service_number, password) =>
-    request("/auth/login", { method: "POST", body: { service_number, password } });
+// Sign-in: service number, password and registered mobile number, then
+// the code texted to that number.
+export const requestOtp = (service_number, password, mobile_number) =>
+    request("/auth/otp/request", {
+        method: "POST",
+        body: { service_number, password, mobile_number },
+    });
 
-export const verifyMfa = (mfa_token, code) =>
-    request("/auth/mfa/verify", { method: "POST", body: { mfa_token, code } });
+export const verifyOtp = (mobile_number, otp) =>
+    request("/auth/otp/verify", { method: "POST", body: { mobile_number, otp } });
 
 export const logout = () => request("/auth/logout", { method: "POST" });
 
@@ -138,7 +143,25 @@ export const me = () => request("/me");
 export const listCases = (page = 1, per_page = 25) =>
     request(`/cases?page=${page}&per_page=${per_page}`);
 
+export const createCase = ({ caseNumber, title, sensitivity }) =>
+    request("/cases", {
+        method: "POST",
+        body: { case_number: caseNumber, title, sensitivity },
+    });
+
 export const getCase = (caseId) => request(`/cases/${caseId}`);
+
+export const updateCase = (caseId, changes) =>
+    request(`/cases/${caseId}`, { method: "PATCH", body: changes });
+
+export const assignOfficer = (caseId, userId) =>
+    request(`/cases/${caseId}/assignments`, { method: "POST", body: { user_id: userId } });
+
+export const unassignOfficer = (caseId, userId) =>
+    request(`/cases/${caseId}/assignments/${userId}`, { method: "DELETE" });
+
+// Everything that has happened on the case, oldest first.
+export const getCaseAudit = (caseId) => request(`/cases/${caseId}/audit`);
 
 export const listCaseDocuments = (caseId) =>
     request(`/cases/${caseId}/documents`);
@@ -154,15 +177,22 @@ export const addProtectedIdentity = (caseId, value, kind = "name") =>
 
 // ---- documents ----
 
+// title is an optional description. The evidence number (STM-002) is
+// assigned by the server and comes back in the response.
 export function uploadDocument({ caseId, title, docType, file }) {
     const form = new FormData();
     form.append("case_id", caseId);
-    form.append("title", title);
+    if (title) form.append("title", title);
     form.append("doc_type", docType);
     form.append("file", file);
 
     return request("/documents", { method: "POST", body: form });
 }
+
+// Every document across the cases you are assigned to. Backs the
+// dashboard and the documents list.
+export const listDocuments = (page = 1, per_page = 50) =>
+    request(`/documents?page=${page}&per_page=${per_page}`);
 
 export const getDocument = (documentId) => request(`/documents/${documentId}`);
 
@@ -195,6 +225,19 @@ export const downloadDocument = (documentId, title) =>
 
 export const downloadCertificate = (documentId) =>
     downloadFile(`/documents/${documentId}/certificate`, "bsa63-certificate.pdf");
+
+// ---- notifications ----
+
+// The caller's own alerts, newest first, with an unread count.
+export const listNotifications = () => request("/notifications");
+
+export const markNotificationRead = (id) =>
+    request(`/notifications/${id}/read`, { method: "POST" });
+
+// ---- users ----
+
+// The officer directory. 403 for ranks that do not assign cases.
+export const listUsers = () => request("/users");
 
 // ---- icjs (mock) ----
 

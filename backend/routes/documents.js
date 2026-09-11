@@ -1,6 +1,5 @@
 const express = require("express");
 const multer = require("multer");
-const crypto = require("crypto");
 
 const db = require("../db");
 const storage = require("../services/storage");
@@ -30,39 +29,31 @@ async function sensitivityForDocument(documentId) {
     return rows[0] ? rows[0].sensitivity : null;
 }
 
-// Recompute the hash of what is actually on disk and compare it to
-// both the stored value and the ledger.
-//
-// One function, two callers: /verify reports the result, and the
-// certificate refuses to issue without it. A certificate must never
-// attest to a hash that nobody just checked, so both paths have to
-// reach the same answer the same way.
-async function checkIntegrity(row) {
-    const chainRecord = await ledger.lookup(row.id);
+// A certificate must never attest to a hash that nobody just checked,
+// so /verify, the certificate and the scheduled sweep share one check.
+const { checkIntegrity } = require("../services/integrity");
 
-    let storedHash = null;
-    let failure = null;
-
-    try {
-        const plaintext = await storage.retrieve(row);
-        storedHash = crypto.createHash("sha256").update(plaintext).digest("hex");
-    } catch (e) {
-        // Decryption failed its authentication tag, which means the
-        // ciphertext on disk was modified.
-        failure = "ciphertext_modified";
-    }
-
-    const verified =
-        !failure &&
-        !!chainRecord &&
-        storedHash === row.sha256 &&
-        storedHash === chainRecord.sha256;
-
-    return { verified, failure, storedHash, chainRecord };
-}
+// Mirrors doc_type_t. The evidence number prefix depends on it, so a
+// bad value is refused here rather than filed as something else.
+const DOC_TYPES = new Set([
+    "fir",
+    "statement",
+    "forensic_report",
+    "charge_sheet",
+    "court_filing",
+    "notice",
+    "other",
+]);
 
 // ---------------------------------------------------------------
 // POST /documents        upload, creates version 1
+//
+// The officer picks the type; the database assigns the evidence number
+// (FIR-001, STM-002, ...) inside this transaction - see migration 007.
+// title is an optional description and falls back to that number.
+//
+// The audit entry is written in the same transaction as the document,
+// so evidence cannot exist without the record of who filed it.
 // ---------------------------------------------------------------
 router.post(
     "/",
@@ -70,17 +61,25 @@ router.post(
     upload.single("file"),
     requirePermission("document.upload", (req) => req.body.case_id),
     async (req, res, next) => {
-        const { case_id, title, doc_type } = req.body || {};
+        const { case_id } = req.body || {};
+        const title = String((req.body || {}).title || "").trim() || null;
+        const docType = (req.body || {}).doc_type || "other";
 
         if (!req.file) {
             return res
                 .status(400)
                 .json({ error: "bad_request", message: "file is required." });
         }
-        if (!case_id || !title) {
+        if (!case_id) {
             return res
                 .status(400)
-                .json({ error: "bad_request", message: "case_id and title are required." });
+                .json({ error: "bad_request", message: "case_id is required." });
+        }
+        if (!DOC_TYPES.has(docType)) {
+            return res.status(400).json({
+                error: "bad_request",
+                message: `doc_type must be one of ${[...DOC_TYPES].join(", ")}.`,
+            });
         }
 
         const client = await db.pool.connect();
@@ -91,10 +90,11 @@ router.post(
 
             const doc = await client.query(
                 `INSERT INTO documents (case_id, title, doc_type, current_version, created_by)
-         VALUES ($1, $2, $3, 1, $4) RETURNING id`,
-                [case_id, title, doc_type || "other", req.user.id]
+         VALUES ($1, $2, $3, 1, $4) RETURNING id, evidence_number, title`,
+                [case_id, title, docType, req.user.id]
             );
             const documentId = doc.rows[0].id;
+            const evidenceNumber = doc.rows[0].evidence_number;
 
             const ver = await client.query(
                 `INSERT INTO document_versions
@@ -116,17 +116,27 @@ router.post(
                 ]
             );
 
-            await client.query("COMMIT");
+            await audit.append(
+                {
+                    userId: req.user.id,
+                    action: "upload",
+                    documentId,
+                    caseId: case_id,
+                    version: 1,
+                    detail: {
+                        evidence_number: evidenceNumber,
+                        doc_type: docType,
+                        sha256: blob.sha256,
+                        size_bytes: blob.size_bytes,
+                        mime_type: req.file.mimetype,
+                        title: doc.rows[0].title,
+                    },
+                    ip: req.ip,
+                },
+                client
+            );
 
-            await audit.append({
-                userId: req.user.id,
-                action: "upload",
-                documentId,
-                caseId: case_id,
-                version: 1,
-                detail: { sha256: blob.sha256, title },
-                ip: req.ip,
-            });
+            await client.query("COMMIT");
 
             // Anchoring is asynchronous on purpose. A slow or unreachable
             // ledger must not fail a user's upload.
@@ -142,6 +152,7 @@ router.post(
 
             return res.status(201).json({
                 document_id: documentId,
+                evidence_number: evidenceNumber,
                 ...ver.rows[0],
                 uploaded_by: req.user,
             });
@@ -166,6 +177,47 @@ router.post(
 // forgotten the way an optional WHERE clause can. A search must never
 // reveal that a document exists in a case you are not assigned to.
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// GET /documents
+//
+// Every document the caller can reach, newest first, across all the
+// cases they are assigned to. Backs the dashboard and the documents
+// list, which would otherwise have to fetch each case in turn.
+//
+// Same rule as everywhere else: the JOIN to case_assignments IS the
+// restriction, so an unassigned case cannot appear here by omission.
+// ---------------------------------------------------------------
+router.get("/", requireAuth, async (req, res, next) => {
+    try {
+        const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+        const perPage = Math.min(100, parseInt(req.query.per_page, 10) || 50);
+
+        const { rows } = await db.query(
+            `SELECT d.id, d.evidence_number, d.title, d.doc_type, d.current_version, d.created_at,
+                    c.id AS case_id, c.case_number, c.sensitivity,
+                    v.sha256, v.size_bytes, v.mime_type,
+                    v.anchor_status, v.ocr_status,
+                    count(*) OVER() AS total_count
+               FROM documents d
+               JOIN cases c ON c.id = d.case_id
+               JOIN case_assignments a
+                 ON a.case_id = c.id AND a.user_id = $1
+               JOIN document_versions v
+                 ON v.document_id = d.id AND v.version = d.current_version
+              ORDER BY d.created_at DESC
+              LIMIT $2 OFFSET $3`,
+            [req.user.id, perPage, (page - 1) * perPage]
+        );
+
+        const total = rows[0] ? Number(rows[0].total_count) : 0;
+        const items = rows.map(({ total_count, ...rest }) => rest);
+
+        return res.json({ items, total, page, per_page: perPage });
+    } catch (err) {
+        next(err);
+    }
+});
+
 router.get("/search", requireAuth, async (req, res, next) => {
     try {
         const q = (req.query.q || "").trim();
@@ -194,7 +246,7 @@ router.get("/search", requireAuth, async (req, res, next) => {
         // in schema.sql exactly. Change one and you must change both or
         // the index stops being used.
         const { rows } = await db.query(
-            `SELECT d.id AS document_id, d.title, d.doc_type,
+            `SELECT d.id AS document_id, d.evidence_number, d.title, d.doc_type,
                     c.id AS case_id, c.case_number, c.sensitivity,
                     v.version, v.uploaded_at,
                     CASE
@@ -243,8 +295,13 @@ router.get(
     async (req, res, next) => {
         try {
             const { rows } = await db.query(
-                `SELECT id, case_id, title, doc_type, current_version, created_at
-           FROM documents WHERE id = $1`,
+                `SELECT d.id, d.case_id, d.evidence_number, d.title, d.doc_type,
+                d.current_version, d.created_at, c.case_number,
+                u.name AS created_by_name, u.service_number AS created_by_service_number
+           FROM documents d
+           JOIN cases c ON c.id = d.case_id
+           JOIN users u ON u.id = d.created_by
+          WHERE d.id = $1`,
                 [req.params.document_id]
             );
             if (!rows[0]) {
@@ -470,6 +527,7 @@ router.get(
             const { rows } = await db.query(
                 `SELECT v.id, v.version, v.sha256, v.size_bytes, v.uploaded_at,
                 v.change_note, v.anchor_status, v.ledger_tx_id, v.ocr_status,
+                v.integrity_checked_at, v.integrity_failed_at,
                 u.name, u.service_number, u.rank
            FROM document_versions v
            JOIN users u ON u.id = v.uploaded_by
@@ -506,8 +564,15 @@ router.post(
 
             await client.query("BEGIN");
 
+            // NO KEY UPDATE, not UPDATE. The audit entry below is written
+            // in this transaction and must wait for the chain lock; a
+            // plain FOR UPDATE here would block the foreign-key check of
+            // any concurrent audit write naming this document while it
+            // holds that lock - a deadlock. NO KEY UPDATE still stops two
+            // new versions racing for the same number.
             const cur = await client.query(
-                "SELECT case_id, current_version FROM documents WHERE id = $1 FOR UPDATE",
+                `SELECT case_id, evidence_number, current_version
+                   FROM documents WHERE id = $1 FOR NO KEY UPDATE`,
                 [req.params.document_id]
             );
             if (!cur.rows[0]) {
@@ -543,17 +608,25 @@ router.post(
                 [next_version, req.params.document_id]
             );
 
-            await client.query("COMMIT");
+            await audit.append(
+                {
+                    userId: req.user.id,
+                    action: "new_version",
+                    documentId: req.params.document_id,
+                    caseId: cur.rows[0].case_id,
+                    version: next_version,
+                    detail: {
+                        evidence_number: cur.rows[0].evidence_number,
+                        previous_version: cur.rows[0].current_version,
+                        sha256: blob.sha256,
+                        change_note: req.body.change_note || null,
+                    },
+                    ip: req.ip,
+                },
+                client
+            );
 
-            await audit.append({
-                userId: req.user.id,
-                action: "new_version",
-                documentId: req.params.document_id,
-                caseId: cur.rows[0].case_id,
-                version: next_version,
-                detail: { sha256: blob.sha256 },
-                ip: req.ip,
-            });
+            await client.query("COMMIT");
 
             ledger
                 .anchor({
@@ -571,6 +644,48 @@ router.post(
             next(err);
         } finally {
             client.release();
+        }
+    }
+);
+
+// ---------------------------------------------------------------
+// DELETE /documents/:document_id
+//
+// Evidence is never deleted - by anyone, at any rank. This route exists
+// so that trying is on the record: the attempt lands in the case's
+// audit trail under the officer who made it. Officers off the case are
+// refused and recorded by requirePermission before reaching here.
+// ---------------------------------------------------------------
+router.delete(
+    "/:document_id",
+    requireAuth,
+    requirePermission("document.view", caseIdForDocument),
+    async (req, res, next) => {
+        try {
+            const { rows } = await db.query(
+                "SELECT case_id, evidence_number FROM documents WHERE id = $1",
+                [req.params.document_id]
+            );
+            if (!rows[0]) {
+                return res.status(404).json({ error: "not_found", message: "Not found." });
+            }
+
+            await audit.append({
+                userId: req.user.id,
+                action: "delete_attempt",
+                documentId: req.params.document_id,
+                caseId: rows[0].case_id,
+                detail: { evidence_number: rows[0].evidence_number, refused: true },
+                ip: req.ip,
+            });
+
+            return res.status(405).json({
+                error: "immutable",
+                message:
+                    "Evidence cannot be deleted. Upload a new version instead - every earlier version is kept.",
+            });
+        } catch (err) {
+            next(err);
         }
     }
 );
@@ -664,6 +779,7 @@ router.get(
 
             const { rows } = await db.query(
                 `SELECT v.*, d.id AS doc_id, d.title AS document_title, d.doc_type,
+                        d.evidence_number,
                         d.case_id, c.case_number, c.title AS case_title,
                         c.sensitivity
                    FROM document_versions v
@@ -711,6 +827,7 @@ router.get(
             const pdf = await certificate.build({
                 document: {
                     id: row.doc_id,
+                    evidence_number: row.evidence_number,
                     title: row.document_title,
                     doc_type: row.doc_type,
                 },

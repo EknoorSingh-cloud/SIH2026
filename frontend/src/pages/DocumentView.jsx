@@ -88,10 +88,13 @@ export default function DocumentView() {
     return (
         <div>
             <div className="page-header">
-                <h1>{doc.title}</h1>
+                <h1>
+                    {doc.case_number} / {doc.evidence_number}
+                </h1>
                 <p>
+                    {doc.title !== doc.evidence_number && <>{doc.title} · </>}
                     {String(doc.doc_type).replace(/_/g, " ")} · version{" "}
-                    {doc.current_version} ·{" "}
+                    {doc.current_version} · filed by {doc.created_by_name} ·{" "}
                     <Link to={`/cases/${doc.case_id}`}>back to case</Link>
                 </p>
             </div>
@@ -148,6 +151,7 @@ export default function DocumentView() {
                         <th>When</th>
                         <th>Ledger</th>
                         <th>OCR</th>
+                        <th>Auto check</th>
                     </tr>
                     </thead>
                     <tbody>
@@ -179,6 +183,19 @@ export default function DocumentView() {
                                 <span className={`status status-${v.ocr_status}`}>
                                     {v.ocr_status}
                                 </span>
+                            </td>
+                            <td>
+                                {v.integrity_failed_at ? (
+                                    <span className="status status-failed">
+                                        failed {new Date(v.integrity_failed_at).toLocaleString()}
+                                    </span>
+                                ) : v.integrity_checked_at ? (
+                                    <span className="muted">
+                                        ok {new Date(v.integrity_checked_at).toLocaleString()}
+                                    </span>
+                                ) : (
+                                    <span className="muted">not yet</span>
+                                )}
                             </td>
                         </tr>
                     ))}

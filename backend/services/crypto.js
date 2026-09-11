@@ -54,6 +54,38 @@ function sha256(buffer) {
 }
 
 // ---------------------------------------------------------------
+// SMS one-time codes
+//
+// randomInt draws from the CSPRNG without modulo bias.
+//
+// A six-digit code has a million possible values, so a plain SHA-256 of
+// one is reversed by trying them all in well under a second. The HMAC
+// is keyed with MASTER_KEY, which never touches the database, and bound
+// to the challenge id, so a leaked otp_challenges table is useless and
+// one challenge's hash says nothing about another's.
+// ---------------------------------------------------------------
+
+function generateOtp() {
+    return String(crypto.randomInt(0, 1000000)).padStart(6, "0");
+}
+
+function hashOtp(challengeId, otp) {
+    const hex = process.env.MASTER_KEY || "";
+    if (hex.length !== 64) throw new Error("MASTER_KEY must be 64 hex characters.");
+
+    return crypto
+        .createHmac("sha256", Buffer.from(hex, "hex"))
+        .update(`otp:${challengeId}:${otp}`)
+        .digest("hex");
+}
+
+function otpMatches(challengeId, otp, storedHash) {
+    const a = Buffer.from(hashOtp(challengeId, otp), "hex");
+    const b = Buffer.from(String(storedHash), "hex");
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// ---------------------------------------------------------------
 // TOTP - the six digit codes in Google Authenticator.
 // RFC 6238. Roughly forty lines, so no package needed.
 // ---------------------------------------------------------------
@@ -145,6 +177,9 @@ module.exports = {
     generateToken,
     hashToken,
     sha256,
+    generateOtp,
+    hashOtp,
+    otpMatches,
     generateMfaSecret,
     verifyTotp,
     totpUri,

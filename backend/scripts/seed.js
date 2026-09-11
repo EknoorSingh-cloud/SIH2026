@@ -15,12 +15,15 @@ const { hashPassword, generateMfaSecret, totpUri } = require("../services/crypto
 
 const PASSWORD = "Test@1234";
 
+// Mobile numbers are deliberately not real phones: 00000 0000x is not
+// an Indian mobile range, so pointing SMS_PROVIDER at a live gateway
+// can never text a stranger. Sign in by typing the ten digits.
 const USERS = [
-    { service_number: "DL-INS-1001", name: "R. Sharma",  rank: "inspector",        station: "Connaught Place" },
-    { service_number: "DL-SI-2002",  name: "P. Verma",   rank: "sub_inspector",    station: "Connaught Place" },
-    { service_number: "DL-CON-3003", name: "A. Kumar",   rank: "constable",        station: "Connaught Place" },
-    { service_number: "DL-PRO-4004", name: "S. Iyer",    rank: "prosecutor",       station: "Tis Hazari" },
-    { service_number: "DL-FSL-5005", name: "N. Das",     rank: "forensic_analyst", station: "Rohini FSL" },
+    { service_number: "DL-INS-1001", name: "R. Sharma",  rank: "inspector",        station: "Connaught Place", mobile: "+910000000001" },
+    { service_number: "DL-SI-2002",  name: "P. Verma",   rank: "sub_inspector",    station: "Connaught Place", mobile: "+910000000002" },
+    { service_number: "DL-CON-3003", name: "A. Kumar",   rank: "constable",        station: "Connaught Place", mobile: "+910000000003" },
+    { service_number: "DL-PRO-4004", name: "S. Iyer",    rank: "prosecutor",       station: "Tis Hazari",      mobile: "+910000000004" },
+    { service_number: "DL-FSL-5005", name: "N. Das",     rank: "forensic_analyst", station: "Rohini FSL",      mobile: "+910000000005" },
 ];
 
 async function main() {
@@ -58,8 +61,8 @@ async function main() {
         const secret = generateMfaSecret();
         const { rows } = await db.query(
             `INSERT INTO users
-         (service_number, name, rank, station, password_hash, mfa_secret, mfa_enabled)
-       VALUES ($1,$2,$3,$4,$5,$6,TRUE)
+         (service_number, name, rank, station, password_hash, mfa_secret, mfa_enabled, mobile_number)
+       VALUES ($1,$2,$3,$4,$5,$6,TRUE,$7)
        RETURNING id`,
             [
                 u.service_number,
@@ -68,6 +71,7 @@ async function main() {
                 u.station,
                 await hashPassword(PASSWORD),
                 secret,
+                u.mobile,
             ]
         );
         created.push({ ...u, id: rows[0].id, secret });
@@ -109,7 +113,7 @@ async function main() {
     console.log(`Password for every user:  ${PASSWORD}\n`);
     console.log("Users:");
     for (const u of created) {
-        console.log(`  ${u.service_number}  ${u.rank}`);
+        console.log(`  ${u.service_number}  ${u.rank}  mobile ${u.mobile.slice(3)}`);
         console.log(`    MFA: ${totpUri(u.secret, u.service_number)}`);
     }
 

@@ -348,6 +348,20 @@
     margin-top: 12px;
 }
 
+/* A select sizes itself to its longest option - an officer's full name,
+   rank and station - which pushed the whole page sideways. */
+.inline-form select {
+    flex: 1;
+    min-width: 0;
+}
+
+/* The case header carries the status control; wrap it under the title
+   on a narrow screen rather than overflowing. */
+.page-header {
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
 .mfa-hint {
     font-size: 13px;
     color: var(--muted);

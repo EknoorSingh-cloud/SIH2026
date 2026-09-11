@@ -1,6 +1,6 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
-import { Folder, LogOut, Search as SearchIcon } from "lucide-react";
-import { useState } from "react";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Folder, LogOut, Search as SearchIcon, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "../auth-context";
 import * as api from "../api/client";
@@ -25,6 +25,58 @@ function plainSnippet(html) {
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
         .replace(/&amp;/g, "&");
+}
+
+// Unread integrity alerts stay pinned above every screen until the
+// officer dismisses them. Polled rather than pushed: the sweep runs
+// every 20 minutes, so a minute's delay in showing its result is noise.
+const ALERT_POLL_MS = 60 * 1000;
+
+function IntegrityAlerts() {
+    const location = useLocation();
+    const [alerts, setAlerts] = useState([]);
+
+    useEffect(() => {
+        let cancelled = false;
+        const load = () =>
+            api.listNotifications()
+                .then((r) => {
+                    if (!cancelled) setAlerts(r.items.filter((n) => !n.read_at));
+                })
+                .catch(() => {});
+
+        load();
+        const t = setInterval(load, ALERT_POLL_MS);
+        return () => {
+            cancelled = true;
+            clearInterval(t);
+        };
+    }, [location.pathname]);
+
+    async function dismiss(id) {
+        await api.markNotificationRead(id).catch(() => {});
+        setAlerts((a) => a.filter((n) => n.id !== id));
+    }
+
+    return alerts.map((n) => (
+        <div
+            key={n.id}
+            className={`alert ${n.kind === "tamper" ? "alert-error" : "alert-ok"}`}
+            role="alert"
+        >
+            {n.kind === "tamper" ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />}{" "}
+            {n.message}{" "}
+            <span className="muted">({new Date(n.created_at).toLocaleString()})</span>{" "}
+            {n.document_id && (
+                <Link to={`/documents/${n.document_id}/verify`} onClick={() => dismiss(n.id)}>
+                    Verify it
+                </Link>
+            )}{" "}
+            <button type="button" className="link-button" onClick={() => dismiss(n.id)}>
+                Dismiss
+            </button>
+        </div>
+    ));
 }
 
 export default function Layout({ children }) {
@@ -113,6 +165,8 @@ export default function Layout({ children }) {
                         Search
                     </button>
                 </form>
+
+                <IntegrityAlerts />
 
                 {results ? (
                     <section className="panel">

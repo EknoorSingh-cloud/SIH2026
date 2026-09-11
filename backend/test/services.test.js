@@ -612,6 +612,63 @@ test("routes: /search is registered before /:document_id", () => {
     assert.ok(search < byId, "/search must be registered before /:document_id");
 });
 
+// ---- mobile OTP sign-in ----
+
+test("otp: mobile numbers normalise to one E.164 form", () => {
+    const sms = require("../services/sms");
+    for (const typed of ["9876543210", "98765 43210", "+91 98765-43210", "+919876543210"]) {
+        assert.strictEqual(sms.normalizeMobile(typed), "+919876543210", typed);
+    }
+    for (const bad of ["", "12345", "abcdefghij", "+0123456789", null]) {
+        assert.strictEqual(sms.normalizeMobile(bad), null, String(bad));
+    }
+});
+
+test("otp: masked number keeps neither the whole number nor its middle", () => {
+    const masked = require("../services/sms").maskMobile("+919876543210");
+    assert.strictEqual(masked, "+91********10");
+});
+
+test("otp: codes are six digits and hashes are bound to their challenge", () => {
+    process.env.MASTER_KEY = process.env.MASTER_KEY || "ab".repeat(32);
+    const { generateOtp, hashOtp, otpMatches } = require("../services/crypto");
+
+    for (let i = 0; i < 200; i++) assert.match(generateOtp(), /^\d{6}$/);
+
+    const h = hashOtp("challenge-a", "123456");
+    assert.ok(!h.includes("123456"));
+    assert.strictEqual(otpMatches("challenge-a", "123456", h), true);
+    assert.strictEqual(otpMatches("challenge-a", "123457", h), false);
+    // The same code on another challenge is a different hash, so one
+    // challenge's row says nothing about another's.
+    assert.strictEqual(otpMatches("challenge-b", "123456", h), false);
+    assert.strictEqual(otpMatches("challenge-a", "123456", "not-hex"), false);
+});
+
+// ---- scheduled integrity check ----
+
+test("integrity: only real damage counts as tampering, never a pending anchor", () => {
+    const { tamperReason } = require("../services/integrity");
+    const H = "a".repeat(64);
+    const row = (anchor_status) => ({ sha256: H, anchor_status });
+    const ok = { failure: null, storedHash: H, chainRecord: { sha256: H } };
+
+    assert.strictEqual(tamperReason(row("anchored"), ok), null);
+    // Not anchored yet: no ledger record is expected, so none is not an alarm.
+    assert.strictEqual(tamperReason(row("pending"), { ...ok, chainRecord: null }), null);
+
+    assert.strictEqual(
+        tamperReason(row("anchored"), { ...ok, failure: "ciphertext_modified", storedHash: null }),
+        "ciphertext_modified"
+    );
+    assert.strictEqual(tamperReason(row("pending"), { ...ok, storedHash: "b".repeat(64) }), "hash_mismatch");
+    assert.strictEqual(tamperReason(row("anchored"), { ...ok, chainRecord: null }), "ledger_mismatch");
+    assert.strictEqual(
+        tamperReason(row("anchored"), { ...ok, chainRecord: { sha256: "c".repeat(64) } }),
+        "ledger_mismatch"
+    );
+});
+
 // ---------------------------------------------------------------
 
 (async () => {
