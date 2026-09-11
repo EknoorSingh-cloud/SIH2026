@@ -16,7 +16,8 @@
     "code": "node scripts/demo-code.js",
     "seed": "node scripts/seed.js",
     "seed:scan": "node scripts/seed-scan.js",
-    "tamper": "node scripts/tamper.js"
+    "tamper": "node scripts/tamper.js",
+    "integrity:check": "node scripts/integrity-check.js"
   },
   "keywords": [],
   "author": "",

@@ -20,6 +20,7 @@ const FAILURE_TEXT = {
     ciphertext_modified:
         "The encrypted file on disk was modified. Decryption failed its authentication tag, " +
         "so the contents could not even be read back.",
+    file_missing: "The stored file is missing from storage. Nothing is left to compare.",
 };
 
 export default function Verify() {

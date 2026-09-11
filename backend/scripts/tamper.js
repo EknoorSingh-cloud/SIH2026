@@ -85,6 +85,9 @@ const storage = require("../services/storage");
     console.log("  Now click Verify on this document. It must say TAMPERED.");
     console.log(`    http://localhost:${process.env.PORT || 5000}/documents/${row.id}/verify`);
     console.log("");
+    console.log("  If the case is under investigation, the officers on it are alerted");
+    console.log("  at the next 20-minute check - or now, with:  npm run integrity:check");
+    console.log("");
     console.log("  To undo: npm run seed  then  npm run seed:scan");
     console.log("");
 

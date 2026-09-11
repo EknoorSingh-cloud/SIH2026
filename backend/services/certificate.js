@@ -171,6 +171,7 @@ async function build(data) {
 
     s.heading("PART A - PARTICULARS OF THE ELECTRONIC RECORD");
 
+    if (document.evidence_number) s.field("Evidence number", document.evidence_number);
     s.field("Document title", document.title);
     s.field("Document type", document.doc_type);
     s.field("Case number", caseRecord.case_number);

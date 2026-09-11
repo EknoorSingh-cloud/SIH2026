@@ -32,6 +32,8 @@ const PERMISSIONS = {
 
     inspector: [
         "case.view",
+        "case.create",
+        "case.update",
         "case.assign",
         "document.view",
         "document.download",
@@ -42,6 +44,8 @@ const PERMISSIONS = {
 
     dcp: [
         "case.view",
+        "case.create",
+        "case.update",
         "case.assign",
         "document.view",
         "document.download",
@@ -70,8 +74,9 @@ const PERMISSIONS = {
     ],
 };
 
-// Actions that need nothing beyond a valid rank.
-const NO_CASE_REQUIRED = new Set([]);
+// Actions that need nothing beyond a valid rank. Creating a case cannot
+// require an assignment to it - the creator is assigned as it is made.
+const NO_CASE_REQUIRED = new Set(["case.create"]);
 
 async function isAssigned(userId, caseId) {
     const { rows } = await db.query(

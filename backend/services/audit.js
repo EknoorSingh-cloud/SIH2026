@@ -37,7 +37,7 @@ function canonicalJson(value) {
 //
 // The advisory lock means two concurrent requests cannot both read the
 // same "last hash" and produce a forked chain.
-async function append({
+async function write(client, {
                           userId = null,
                           action,
                           documentId = null,
@@ -46,59 +46,74 @@ async function append({
                           detail = null,
                           ip = null,
                       }) {
-    const client = await db.pool.connect();
-    try {
-        await client.query("BEGIN");
-        await client.query("SELECT pg_advisory_xact_lock(4815162342)");
+    await client.query("SELECT pg_advisory_xact_lock(4815162342)");
 
-        const prev = await client.query(
-            "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
-        );
-        const prevHash = prev.rows[0] ? prev.rows[0].entry_hash : GENESIS;
+    const prev = await client.query(
+        "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+    );
+    const prevHash = prev.rows[0] ? prev.rows[0].entry_hash : GENESIS;
 
-        const occurredAt = new Date().toISOString();
-        const payload = [
-            prevHash,
+    const occurredAt = new Date().toISOString();
+    const payload = [
+        prevHash,
+        userId,
+        action,
+        documentId,
+        caseId,
+        version,
+        occurredAt,
+        detail ? canonicalJson(detail) : "",
+    ].join("|");
+
+    const entryHash = sha256(payload);
+
+    await client.query(
+        `INSERT INTO audit_log
+         (user_id, action, document_id, case_id, version,
+          detail, ip, occurred_at, prev_hash, entry_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [
             userId,
             action,
             documentId,
             caseId,
             version,
+            detail,
+            ip,
             occurredAt,
-            detail ? canonicalJson(detail) : "",
-        ].join("|");
+            prevHash,
+            entryHash,
+        ]
+    );
 
-        const entryHash = sha256(payload);
+    return entryHash;
+}
 
-        await client.query(
-            `INSERT INTO audit_log
-         (user_id, action, document_id, case_id, version,
-          detail, ip, occurred_at, prev_hash, entry_hash)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [
-                userId,
-                action,
-                documentId,
-                caseId,
-                version,
-                detail,
-                ip,
-                occurredAt,
-                prevHash,
-                entryHash,
-            ]
-        );
+// Pass the caller's client to write the entry inside its transaction.
+// That is how a change and its audit entry commit together or not at
+// all: evidence can never exist without the record of who filed it.
+// Append it as the last statement before COMMIT - the chain lock is
+// held until the transaction ends.
+//
+// Without a client the entry commits on its own, which is right for
+// reads, where there is no change to tie it to.
+async function append(entry, client = null) {
+    if (client) return write(client, entry);
 
-        await client.query("COMMIT");
+    const own = await db.pool.connect();
+    try {
+        await own.query("BEGIN");
+        const entryHash = await write(own, entry);
+        await own.query("COMMIT");
         return entryHash;
     } catch (err) {
-        await client.query("ROLLBACK");
+        await own.query("ROLLBACK");
         // An audit write failing must never silently succeed, but it also
         // must not take down the request that triggered it.
         console.error("AUDIT WRITE FAILED", err);
         throw err;
     } finally {
-        client.release();
+        own.release();
     }
 }
 

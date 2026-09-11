@@ -96,6 +96,99 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /auth/otp/request:
+    post:
+      tags: [auth]
+      summary: >
+        Sign-in, step 1. Checks service number and password, and that the
+        mobile number is the officer's registered one; only then texts a
+        6-digit code to it. Codes expire in 5 minutes; at most 3 per
+        officer per 15 minutes, 60 s apart. Only an HMAC of the code is
+        stored.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [service_number, password, mobile_number]
+              properties:
+                service_number:
+                  type: string
+                password:
+                  type: string
+                mobile_number:
+                  type: string
+                  description: E.164, or ten digits read as +91
+                  example: "9876543210"
+      responses:
+        '202':
+          description: Code sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  expires_in:
+                    type: integer
+                  resend_after:
+                    type: integer
+        '400':
+          description: A field is missing, or the mobile number is not valid
+        '401':
+          description: >
+            Invalid credentials - the same answer for a wrong password and
+            for a mobile number that is not the officer's
+        '429':
+          description: Too many requests from this address, or codes for this officer
+        '502':
+          description: The SMS provider could not send the code
+
+  /auth/otp/verify:
+    post:
+      tags: [auth]
+      summary: >
+        Sign-in, step 2. Exchanges the code for a session. Each
+        guess costs one of 5 attempts; a code works once, and only the
+        newest code for a number is live. Unknown number, wrong, expired,
+        exhausted or used code all return the same 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mobile_number, otp]
+              properties:
+                mobile_number:
+                  type: string
+                otp:
+                  type: string
+                  pattern: '^[0-9]{6}$'
+      responses:
+        '200':
+          description: Session issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session_token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                  user:
+                    $ref: '#/components/schemas/User'
+        '401':
+          description: invalid_code
+        '429':
+          description: Too many attempts from this address
+
   /auth/logout:
     post:
       tags: [auth]
@@ -125,13 +218,44 @@ paths:
                       $ref: '#/components/schemas/Case'
                   total:
                     type: integer
+    post:
+      tags: [cases]
+      summary: >
+        Open a case (case.create). Station and creator come from the
+        session; the creator is assigned in the same transaction.
+        Audited as case_create.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [case_number, title]
+              properties:
+                case_number:
+                  type: string
+                title:
+                  type: string
+                sensitivity:
+                  $ref: '#/components/schemas/Sensitivity'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Case number already exists
 
   /cases/{case_id}:
     parameters:
       - $ref: '#/components/parameters/CaseId'
     get:
       tags: [cases]
-      summary: Get one case.
+      summary: Get one case, with the officers currently assigned.
       responses:
         '200':
           description: OK
@@ -143,6 +267,36 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [cases]
+      summary: >
+        Change title, status or sensitivity (case.update). Audited as
+        case_update with every changed field as {from, to}.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                status:
+                  type: string
+                  enum: [open, under_investigation, charge_sheeted, closed]
+                sensitivity:
+                  $ref: '#/components/schemas/Sensitivity'
+      responses:
+        '200':
+          description: Updated (or unchanged)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '400':
+          description: Nothing to change, or an invalid value
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /cases/{case_id}/documents:
     parameters:
@@ -217,23 +371,103 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /cases/{case_id}/assignments:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    post:
+      tags: [cases]
+      summary: Put an officer on the case (case.assign). Audited as assign.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Assigned
+        '404':
+          description: No active officer with that id
+        '409':
+          description: Already on the case
+
+  /cases/{case_id}/assignments/{user_id}:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    delete:
+      tags: [cases]
+      summary: >
+        Take an officer off the case (case.assign). Audited as unassign.
+        You cannot remove yourself, so someone able to assign always remains.
+      responses:
+        '204':
+          description: Removed
+        '400':
+          description: Tried to remove yourself
+        '404':
+          description: That officer is not on this case
+
+  /cases/{case_id}/audit:
+    parameters:
+      - $ref: '#/components/parameters/CaseId'
+    get:
+      tags: [audit]
+      summary: >
+        Every event on this case, oldest first - creation, edits,
+        assignments, evidence filed, viewed, versioned, verified,
+        released, and refused attempts - each with the acting officer.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chain_intact:
+                    type: boolean
+                  broken_at:
+                    type: integer
+                    nullable: true
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditEntry'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /documents:
     post:
       tags: [documents]
-      summary: Upload a new document. Creates version 1.
+      summary: >
+        File evidence. Creates version 1. The database assigns a
+        type-specific evidence number within the case (FIR-001, STM-002).
+        Audited as upload in the same transaction.
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [case_id, title, file]
+              required: [case_id, file]
               properties:
                 case_id:
                   type: string
                   format: uuid
                 title:
                   type: string
+                  description: Optional description; defaults to the evidence number
                 doc_type:
                   $ref: '#/components/schemas/DocType'
                 file:
@@ -307,6 +541,14 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [documents]
+      summary: >
+        Always refused - evidence is never deleted. The attempt is
+        recorded in the case audit trail as delete_attempt.
+      responses:
+        '405':
+          description: immutable
 
   /documents/{document_id}/content:
     parameters:
@@ -529,6 +771,69 @@ paths:
                       $ref: '#/components/schemas/AuditEntry'
         '403':
           $ref: '#/components/responses/Forbidden'
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: >
+        The caller's integrity alerts, newest first (max 50). Raised by
+        the automatic check that re-verifies every file in cases under
+        investigation every 20 minutes: kind "tamper" when a version first
+        fails, "integrity_restored" if it verifies again. Only for cases
+        the caller is still assigned to.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unread:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        kind:
+                          type: string
+                          enum: [tamper, integrity_restored]
+                        case_id:
+                          type: string
+                          format: uuid
+                        document_id:
+                          type: string
+                          format: uuid
+                        version:
+                          type: integer
+                        message:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        read_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+
+  /notifications/{id}/read:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+    post:
+      tags: [notifications]
+      summary: Mark one of your own notifications read.
+      responses:
+        '204':
+          description: Marked read
+        '404':
+          description: No such notification of yours
 
   # ---------------------------------------------------------------
   # ICJS exchange. MOCK - fixture-backed, no live CCTNS connection.
@@ -835,6 +1140,10 @@ components:
         case_id:
           type: string
           format: uuid
+        evidence_number:
+          type: string
+          description: Assigned by the database, unique within the case, never changes
+          example: STM-002
         title:
           type: string
         doc_type:
@@ -903,10 +1212,24 @@ components:
           $ref: '#/components/schemas/User'
         action:
           type: string
-          enum: [upload, view, download, export_redacted, new_version, verify, share, access_denied]
+          enum: [upload, view, download, export_redacted, new_version, verify, search,
+                 share, access_denied, login, case_create, case_update, assign,
+                 unassign, identity_add, delete_attempt]
+        case_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null only for login, search and pre-case denials (enforced by the database)
         document_id:
           type: string
           format: uuid
+        evidence_number:
+          type: string
+          nullable: true
+        detail:
+          type: object
+          nullable: true
+          description: Action-specific; case_update carries changes as {field - {from, to}}
         occurred_at:
           type: string
           format: date-time
