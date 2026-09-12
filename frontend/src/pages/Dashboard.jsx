@@ -1,117 +1,119 @@
-import Sidebar from "../components/Sidebar";
-import {
-  FileText,
-  Users,
-  Upload,
-  ShieldCheck,
-  Bell,
-  ArrowUpRight,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { Folder, FileText, ShieldAlert, ScanLine } from "lucide-react";
 
-function Dashboard() {
-  const stats = [
-    {
-      title: "Total Documents",
-      value: "124",
-      icon: <FileText size={24} />,
-    },
-    {
-      title: "Active Users",
-      value: "18",
-      icon: <Users size={24} />,
-    },
-    {
-      title: "Uploaded Today",
-      value: "12",
-      icon: <Upload size={24} />,
-    },
-    {
-      title: "Security Status",
-      value: "Secure",
-      icon: <ShieldCheck size={24} />,
-    },
-  ];
+import * as api from "../api/client";
+import { useAuth } from "../auth-context";
 
-  const documents = [
-    {
-      name: "Legal_Contract.pdf",
-      type: "PDF Document",
-      date: "Today, 10:32 AM",
-    },
-    {
-      name: "Client_Agreement.pdf",
-      type: "PDF Document",
-      date: "Yesterday",
-    },
-    {
-      name: "Case_Document.docx",
-      type: "Word Document",
-      date: "2 days ago",
-    },
-    {
-      name: "Financial_Report.pdf",
-      type: "PDF Document",
-      date: "3 days ago",
-    },
-  ];
+// ---------------------------------------------------------------
+// The overview screen.
+//
+// Every number here is counted from what this officer can actually
+// reach - the same assignment-scoped endpoints the rest of the app
+// uses. There is deliberately no "documents in the system" figure,
+// because no officer has a view of that, and inventing one would
+// misrepresent how the system works to the person reading the screen.
+// ---------------------------------------------------------------
 
-  return (
-    <div className="app-layout">
-      <Sidebar />
+export default function Dashboard() {
+    const { user } = useAuth();
 
-      <main className="main-content">
-        <div className="page-header">
-          <div>
-            <h1>Dashboard</h1>
-            <p>Welcome back. Here's what's happening today.</p>
-          </div>
+    const [cases, setCases] = useState([]);
+    const [docs, setDocs] = useState([]);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
 
-          <Bell size={22} />
-        </div>
+    useEffect(() => {
+        let cancelled = false;
 
-        <div className="stats-grid">
-          {stats.map((stat) => (
-            <div className="stat-card" key={stat.title}>
-              <div className="stat-icon">
-                {stat.icon}
-              </div>
+        (async () => {
+            try {
+                const [c, d] = await Promise.all([api.listCases(), api.listDocuments()]);
+                if (cancelled) return;
+                setCases(c.items || []);
+                setDocs(d.items || []);
+            } catch (err) {
+                if (!cancelled) setError(err.message);
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        })();
 
-              <div>
-                <h3>{stat.value}</h3>
-                <p>{stat.title}</p>
-              </div>
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    if (loading) return <div className="page-loading">Loading overview...</div>;
+
+    const protectedCases = cases.filter((c) => c.sensitivity === "protected").length;
+    const unread = docs.filter(
+        (d) => d.ocr_status === "pending" || d.ocr_status === "processing"
+    ).length;
+
+    const stats = [
+        { icon: Folder, label: "Cases assigned to you", value: cases.length, to: "/cases" },
+        { icon: FileText, label: "Documents you can open", value: docs.length, to: "/documents" },
+        { icon: ShieldAlert, label: "Protected cases", value: protectedCases, to: "/cases" },
+        { icon: ScanLine, label: "Still being read", value: unread, to: "/documents" },
+    ];
+
+    return (
+        <div>
+            <div className="page-header">
+                <h1>{user ? `Good day, ${user.name}` : "Overview"}</h1>
+                <p>{user && `${user.rank.replace(/_/g, " ")} · ${user.station}`}</p>
             </div>
-          ))}
-        </div>
 
-        <div className="recent-section">
-          <div className="section-header">
-            <h2>Recent Documents</h2>
-            <span>View All</span>
-          </div>
+            {error && <div className="alert alert-error">{error}</div>}
 
-          <div className="document-list">
-            {documents.map((doc) => (
-              <div className="document-item" key={doc.name}>
-                <div className="document-icon">
-                  <FileText size={22} />
+            <div className="stat-row">
+                {stats.map(({ icon: Icon, label, value, to }) => (
+                    <Link key={label} to={to} className="stat-card">
+                        <Icon size={20} />
+                        <strong>{value}</strong>
+                        <span>{label}</span>
+                    </Link>
+                ))}
+            </div>
+
+            {unread > 0 && (
+                <div className="alert alert-warn">
+                    {unread} document{unread === 1 ? " is" : "s are"} still being read.
+                    Search will not find {unread === 1 ? "it" : "them"} until that
+                    finishes - and if the number never falls, the text reader is not
+                    running.
                 </div>
+            )}
 
-                <div className="document-info">
-                  <h4>{doc.name}</h4>
-                  <p>
-                    {doc.type} • {doc.date}
-                  </p>
-                </div>
-
-                <ArrowUpRight size={20} />
-              </div>
-            ))}
-          </div>
+            <section className="panel">
+                <h2>Recently added</h2>
+                {docs.length === 0 ? (
+                    <p className="muted">
+                        Nothing yet. Open a case to upload the first document.
+                    </p>
+                ) : (
+                    <div className="document-list">
+                        {docs.slice(0, 8).map((d) => (
+                            <Link key={d.id} to={`/documents/${d.id}`} className="document-item">
+                                <FileText size={20} />
+                                <div>
+                                    <h4>{d.title}</h4>
+                                    <p>
+                                        {d.case_number} · {String(d.doc_type).replace(/_/g, " ")} ·{" "}
+                                        {new Date(d.created_at).toLocaleDateString()}
+                                    </p>
+                                </div>
+                                {d.sensitivity === "protected" && (
+                                    <span className="badge badge-protected">
+                                        <ShieldAlert size={13} /> Protected
+                                    </span>
+                                )}
+                            </Link>
+                        ))}
+                    </div>
+                )}
+            </section>
         </div>
-      </main>
-    </div>
-  );
+    );
 }
-
-export default Dashboard;

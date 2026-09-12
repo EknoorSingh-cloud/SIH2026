@@ -1,186 +1,128 @@
 import { useState } from "react";
-import Sidebar from "../components/Sidebar";
-import {
-  Search as SearchIcon,
-  FileText,
-  Calendar,
-  User,
-  Folder,
-  X,
-} from "lucide-react";
+import { Link } from "react-router-dom";
+import { Search as SearchIcon, ShieldAlert } from "lucide-react";
 
-function Search() {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState("All");
+import * as api from "../api/client";
 
-  const documents = [
-    {
-      id: 1,
-      name: "Legal_Contract.pdf",
-      category: "Legal",
-      type: "PDF Document",
-      uploadedBy: "Admin",
-      date: "Sep 4, 2026",
-    },
-    {
-      id: 2,
-      name: "Client_Agreement.pdf",
-      category: "Contracts",
-      type: "PDF Document",
-      uploadedBy: "John Smith",
-      date: "Sep 3, 2026",
-    },
-    {
-      id: 3,
-      name: "Financial_Report.pdf",
-      category: "Financial",
-      type: "PDF Document",
-      uploadedBy: "Admin",
-      date: "Sep 2, 2026",
-    },
-    {
-      id: 4,
-      name: "Personal_Identity.docx",
-      category: "Personal",
-      type: "Word Document",
-      uploadedBy: "Sarah Johnson",
-      date: "Sep 1, 2026",
-    },
-  ];
+// ---------------------------------------------------------------
+// Full-text search across the documents this officer can reach.
+//
+// Two things worth understanding about the results:
+//
+//   - It searches the recognised text, so a document that has not been
+//     read yet cannot match, however obviously relevant it is.
+//   - A protected case never shows a preview. The extract would be the
+//     victim's own statement, and previews are cut mid-name, so no
+//     word-based removal could make one safe.
+// ---------------------------------------------------------------
 
-  const filteredDocuments = documents.filter((document) => {
-    const matchesSearch = document.name
-      .toLowerCase()
-      .includes(searchTerm.toLowerCase());
-
-    const matchesCategory =
-      selectedCategory === "All" ||
-      document.category === selectedCategory;
-
-    return matchesSearch && matchesCategory;
-  });
-
-  const clearSearch = () => {
-    setSearchTerm("");
-    setSelectedCategory("All");
-  };
-
-  return (
-    <div className="app-layout">
-      <Sidebar />
-
-      <main className="main-content">
-        <div className="page-header">
-          <div>
-            <h1>Search Documents</h1>
-            <p>Quickly find documents across your secure storage.</p>
-          </div>
-        </div>
-
-        <div className="search-page-card">
-          <div className="large-search-box">
-            <SearchIcon size={22} />
-
-            <input
-              type="text"
-              placeholder="Search by document name..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-
-            {searchTerm && (
-              <button
-                className="clear-search"
-                onClick={() => setSearchTerm("")}
-              >
-                <X size={18} />
-              </button>
-            )}
-          </div>
-
-          <div className="category-filters">
-            {["All", "Legal", "Contracts", "Financial", "Personal"].map(
-              (category) => (
-                <button
-                  key={category}
-                  className={
-                    selectedCategory === category
-                      ? "category-button active-category"
-                      : "category-button"
-                  }
-                  onClick={() => setSelectedCategory(category)}
-                >
-                  {category}
-                </button>
-              )
-            )}
-          </div>
-        </div>
-
-        <div className="search-results-header">
-          <h2>
-            {filteredDocuments.length} Document
-            {filteredDocuments.length !== 1 ? "s" : ""} Found
-          </h2>
-
-          {(searchTerm || selectedCategory !== "All") && (
-            <button className="clear-all-button" onClick={clearSearch}>
-              Clear Filters
-            </button>
-          )}
-        </div>
-
-        <div className="search-results-grid">
-          {filteredDocuments.map((document) => (
-            <div className="search-document-card" key={document.id}>
-              <div className="search-document-top">
-                <div className="search-file-icon">
-                  <FileText size={25} />
-                </div>
-
-                <span className="search-category">
-                  {document.category}
-                </span>
-              </div>
-
-              <h3>{document.name}</h3>
-
-              <p className="document-type">{document.type}</p>
-
-              <div className="search-document-info">
-                <div>
-                  <User size={15} />
-                  {document.uploadedBy}
-                </div>
-
-                <div>
-                  <Calendar size={15} />
-                  {document.date}
-                </div>
-              </div>
-
-              <button className="view-document-button">
-                <Folder size={17} />
-                View Document
-              </button>
-            </div>
-          ))}
-        </div>
-
-        {filteredDocuments.length === 0 && (
-          <div className="search-empty-state">
-            <SearchIcon size={55} />
-            <h2>No documents found</h2>
-            <p>Try changing your search or category filter.</p>
-
-            <button className="primary-button" onClick={clearSearch}>
-              Clear Filters
-            </button>
-          </div>
-        )}
-      </main>
-    </div>
-  );
+// ts_headline wraps matches in <b> but does not escape the text around
+// them, and that text is OCR of a document somebody uploaded. Rendering
+// it as HTML would run script out of an evidence file.
+function plainSnippet(html) {
+    return String(html || "")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, "&");
 }
 
-export default Search;
+export default function Search() {
+    const [term, setTerm] = useState("");
+    const [results, setResults] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+
+    async function run(e) {
+        e.preventDefault();
+        const q = term.trim();
+        if (!q) return;
+
+        setBusy(true);
+        setError(null);
+        try {
+            setResults(await api.searchDocuments(q));
+        } catch (err) {
+            setError(err.message);
+            setResults(null);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <div>
+            <div className="page-header">
+                <h1>Search</h1>
+                <p>Searches inside documents, not just their titles</p>
+            </div>
+
+            <section className="panel">
+                <form onSubmit={run} className="inline-form">
+                    <input
+                        value={term}
+                        onChange={(e) => setTerm(e.target.value)}
+                        placeholder="A name, an FIR number, a place..."
+                        autoFocus
+                    />
+                    <button type="submit" className="btn" disabled={busy || !term.trim()}>
+                        <SearchIcon size={15} /> {busy ? "Searching..." : "Search"}
+                    </button>
+                </form>
+
+                <p className="muted">
+                    Only cases you are assigned to. Every search is recorded in the audit
+                    log, because searching is itself a way of learning what exists.
+                </p>
+            </section>
+
+            {error && <div className="alert alert-error">{error}</div>}
+
+            {results && (
+                <section className="panel">
+                    <h2>
+                        {results.total} result{results.total === 1 ? "" : "s"}
+                    </h2>
+
+                    {results.items.length === 0 && (
+                        <p className="muted">
+                            Nothing matched. Search reads the recognised text, so a
+                            document that has not been read yet cannot match - check its
+                            status under Documents.
+                        </p>
+                    )}
+
+                    {results.items.map((r) => (
+                        <Link
+                            key={`${r.document_id}-${r.version}`}
+                            to={`/documents/${r.document_id}`}
+                            className="search-hit"
+                        >
+                            <div className="timeline-head">
+                                <strong>{r.title}</strong>
+                                <span className="muted">{r.case_number}</span>
+                            </div>
+
+                            {r.snippet ? (
+                                <p className="snippet">{plainSnippet(r.snippet)}</p>
+                            ) : (
+                                <p className="muted">
+                                    {r.sensitivity === "protected" ? (
+                                        <>
+                                            <ShieldAlert size={13} /> Preview withheld -
+                                            protected case
+                                        </>
+                                    ) : (
+                                        "No preview"
+                                    )}
+                                </p>
+                            )}
+                        </Link>
+                    ))}
+                </section>
+            )}
+        </div>
+    );
+}
