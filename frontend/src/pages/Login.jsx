@@ -23,6 +23,7 @@ export default function Login() {
     const [password, setPassword] = useState("");
     const [mobile, setMobile] = useState("");
     const [code, setCode] = useState("");
+    const [otpToken, setOtpToken] = useState(null);
     const [notice, setNotice] = useState(null);
     const [error, setError] = useState(null);
     const [busy, setBusy] = useState(false);
@@ -41,6 +42,7 @@ export default function Login() {
         try {
             const res = await api.requestOtp(serviceNumber.trim(), password, mobile.trim());
             setNotice(res.message);
+            setOtpToken(res.otp_token);
             setResendIn(res.resend_after || 60);
             setCode("");
             setStage("otp");
@@ -56,7 +58,7 @@ export default function Login() {
         setError(null);
         setBusy(true);
         try {
-            const res = await api.verifyOtp(mobile.trim(), code.trim());
+            const res = await api.verifyOtp(otpToken, code.trim());
             await signIn(res.session_token, res.user);
             navigate("/cases", { replace: true });
         } catch (err) {
@@ -169,6 +171,7 @@ export default function Login() {
                             onClick={() => {
                                 setStage("credentials");
                                 setError(null);
+                                setOtpToken(null);
                             }}
                         >
                             Back

@@ -28,10 +28,18 @@ router.get("/", requireAuth, async (req, res, next) => {
             [req.user.id]
         );
 
-        return res.json({
-            unread: rows.filter((n) => !n.read_at).length,
-            items: rows,
-        });
+        // Counted in the database, not from the 50 rows above, or an
+        // officer with more than 50 alerts is told they have 50.
+        const { rows: count } = await db.query(
+            `SELECT count(*)::int AS unread
+               FROM notifications n
+               JOIN case_assignments a
+                 ON a.case_id = n.case_id AND a.user_id = n.user_id
+              WHERE n.user_id = $1 AND n.read_at IS NULL`,
+            [req.user.id]
+        );
+
+        return res.json({ unread: count[0].unread, items: rows });
     } catch (err) {
         next(err);
     }

@@ -1,6 +1,6 @@
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Folder, LogOut, Search as SearchIcon, ShieldAlert, ShieldCheck } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAuth } from "../auth-context";
 import * as api from "../api/client";
@@ -36,12 +36,20 @@ function IntegrityAlerts() {
     const location = useLocation();
     const [alerts, setAlerts] = useState([]);
 
+    // Ids dismissed in this tab. A dismissal and the next poll can be
+    // in flight together, and without this the poll's answer - taken
+    // before the dismissal landed - puts the banner straight back.
+    const dismissed = useRef(new Set());
+
     useEffect(() => {
         let cancelled = false;
         const load = () =>
             api.listNotifications()
                 .then((r) => {
-                    if (!cancelled) setAlerts(r.items.filter((n) => !n.read_at));
+                    if (cancelled) return;
+                    setAlerts(
+                        r.items.filter((n) => !n.read_at && !dismissed.current.has(n.id))
+                    );
                 })
                 .catch(() => {});
 
@@ -53,9 +61,10 @@ function IntegrityAlerts() {
         };
     }, [location.pathname]);
 
-    async function dismiss(id) {
-        await api.markNotificationRead(id).catch(() => {});
+    function dismiss(id) {
+        dismissed.current.add(id);
         setAlerts((a) => a.filter((n) => n.id !== id));
+        api.markNotificationRead(id).catch(() => {});
     }
 
     return alerts.map((n) => (

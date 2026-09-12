@@ -66,10 +66,13 @@ export default function CaseDetail() {
     const load = useCallback(
         async (shouldApply = () => true) => {
             try {
+                // The trail is loaded alongside the case but its failure
+                // is its own: a slow chain check must not cost the
+                // officer the evidence list and the upload form too.
                 const [c, docs, trail] = await Promise.all([
                     api.getCase(caseId),
                     api.listCaseDocuments(caseId),
-                    api.getCaseAudit(caseId),
+                    api.getCaseAudit(caseId).catch((err) => ({ error: err.message })),
                 ]);
                 if (!shouldApply()) return;
 
@@ -383,10 +386,18 @@ export default function CaseDetail() {
                         Every action on this case since it was opened, oldest first, with
                         the officer who took it. Entries cannot be edited or removed.
                     </p>
-                    <ChainBanner audit={audit} />
-                    <Timeline entries={audit.entries} />
-                    {audit.entries.length === 0 && (
-                        <p className="muted">No events recorded for this case.</p>
+                    {audit.error ? (
+                        <div className="alert alert-error">
+                            The audit trail could not be loaded: {audit.error}
+                        </div>
+                    ) : (
+                        <>
+                            <ChainBanner audit={audit} />
+                            <Timeline entries={audit.entries} />
+                            {audit.entries.length === 0 && (
+                                <p className="muted">No events recorded for this case.</p>
+                            )}
+                        </>
                     )}
                 </section>
             )}

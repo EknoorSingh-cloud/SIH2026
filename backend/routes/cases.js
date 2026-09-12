@@ -10,6 +10,10 @@ const router = express.Router();
 // Mirror the enums in schema.sql. Checked here so a bad value is a 400
 // with a reason rather than a Postgres cast error surfacing as a 500.
 const SENSITIVITIES = new Set(["normal", "restricted", "protected"]);
+
+// Sensitivity is a one-way ratchet through this order. See the refusal
+// in PATCH below for why.
+const SENSITIVITY_RANK = { normal: 0, restricted: 1, protected: 2 };
 const STATUSES = new Set(["open", "under_investigation", "charge_sheeted", "closed"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -205,7 +209,28 @@ router.patch(
                 for (const [field, to] of Object.entries(wanted)) {
                     if (before[field] !== to) changes[field] = { from: before[field], to };
                 }
-                if (Object.keys(changes).length === 0) return before;
+                if (Object.keys(changes).length === 0) return { record: before };
+
+                // Sensitivity only ever goes up. Lowering it - protected
+                // to normal - switches off the redaction that every
+                // export on an S.72 case depends on, which is one API
+                // call away from releasing the victim's identity. Raising
+                // it is always safe; lowering one needs a deliberate act
+                // outside the application, not a dropdown.
+                const s = changes.sensitivity;
+                if (s && SENSITIVITY_RANK[s.to] < SENSITIVITY_RANK[s.from]) {
+                    await audit.append(
+                        {
+                            userId: req.user.id,
+                            action: "access_denied",
+                            caseId: req.params.case_id,
+                            detail: { attempted: "case.sensitivity_downgrade", changes: { sensitivity: s } },
+                            ip: req.ip,
+                        },
+                        client
+                    );
+                    return { refused: s };
+                }
 
                 const { rows } = await client.query(
                     `UPDATE cases
@@ -233,10 +258,19 @@ router.patch(
                     client
                 );
 
-                return rows[0];
+                return { record: rows[0] };
             });
 
-            return res.json(updated);
+            if (updated.refused) {
+                return res.status(403).json({
+                    error: "forbidden",
+                    message:
+                        `A case cannot be moved from ${updated.refused.from} down to ${updated.refused.to}. ` +
+                        "Lowering sensitivity would switch off redaction on evidence already released under it.",
+                });
+            }
+
+            return res.json(updated.record);
         } catch (err) {
             next(err);
         }

@@ -131,8 +131,10 @@ export const requestOtp = (service_number, password, mobile_number) =>
         body: { service_number, password, mobile_number },
     });
 
-export const verifyOtp = (mobile_number, otp) =>
-    request("/auth/otp/verify", { method: "POST", body: { mobile_number, otp } });
+// otp_token comes from requestOtp. It identifies the code to check, so
+// only the browser that passed the password can spend its attempts.
+export const verifyOtp = (otp_token, otp) =>
+    request("/auth/otp/verify", { method: "POST", body: { otp_token, otp } });
 
 export const logout = () => request("/auth/logout", { method: "POST" });
 

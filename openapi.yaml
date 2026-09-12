@@ -62,7 +62,11 @@ paths:
   /auth/mfa/verify:
     post:
       tags: [auth]
-      summary: Step 2 of login. Exchanges a TOTP code for a session token.
+      summary: >
+        Step 2 of the authenticator-app path. Exchanges a TOTP code for a
+        session. The account must have an authenticator enrolled - a
+        password alone never yields a session - and the challenge is
+        discarded after 5 wrong codes.
       security: []
       requestBody:
         required: true
@@ -130,6 +134,13 @@ paths:
               schema:
                 type: object
                 properties:
+                  otp_token:
+                    type: string
+                    format: uuid
+                    description: >
+                      Names the code to verify in step 2. Random per request and
+                      issued only to a caller that passed the password, so nobody
+                      else can spend this officer's attempts.
                   message:
                     type: string
                   expires_in:
@@ -142,6 +153,10 @@ paths:
           description: >
             Invalid credentials - the same answer for a wrong password and
             for a mobile number that is not the officer's
+        '409':
+          description: >
+            no_mobile_registered - the password was right but the account has no
+            mobile number, so no code can be sent
         '429':
           description: Too many requests from this address, or codes for this officer
         '502':
@@ -151,10 +166,12 @@ paths:
     post:
       tags: [auth]
       summary: >
-        Sign-in, step 2. Exchanges the code for a session. Each
-        guess costs one of 5 attempts; a code works once, and only the
-        newest code for a number is live. Unknown number, wrong, expired,
-        exhausted or used code all return the same 401.
+        Sign-in, step 2. Exchanges the code for a session. Keyed on the
+        otp_token from step 1, so only the caller that passed the password
+        can spend the code's attempts. Each guess costs one of 5; a code
+        works once, and requesting a new code retires the previous one.
+        Unknown token, wrong, expired, exhausted or used code all return
+        the same 401.
       security: []
       requestBody:
         required: true
@@ -162,10 +179,12 @@ paths:
           application/json:
             schema:
               type: object
-              required: [mobile_number, otp]
+              required: [otp_token, otp]
               properties:
-                mobile_number:
+                otp_token:
                   type: string
+                  format: uuid
+                  description: From the step 1 response
                 otp:
                   type: string
                   pattern: '^[0-9]{6}$'
@@ -296,7 +315,10 @@ paths:
         '400':
           description: Nothing to change, or an invalid value
         '403':
-          $ref: '#/components/responses/Forbidden'
+          description: >
+            Your rank does not permit this, or the change would lower the case's
+            sensitivity - that only ever goes up, since lowering it switches off
+            the redaction applied to evidence already released
 
   /cases/{case_id}/documents:
     parameters:

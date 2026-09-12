@@ -31,7 +31,15 @@ app.use(
 
 app.use(express.json({ limit: "100kb" }));
 
-app.set("trust proxy", true);
+// How many reverse proxies sit in front of this process. It decides
+// which X-Forwarded-For entry becomes req.ip, which is what the OTP
+// rate limits and every audit entry record.
+//
+// NOT `true`: that trusts the whole header, so any client could claim
+// any address and walk straight past the per-IP limits. 0 (the default)
+// uses the real socket address - correct when nothing is in front.
+// Behind one proxy (Render, nginx) set TRUST_PROXY_HOPS=1.
+app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS || 0));
 
 app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/cases", caseRoutes);
@@ -111,7 +119,12 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, async () => {
-    const n = await ledger.rehydrate().catch(() => 0);
+    let rehydrated = true;
+    const n = await ledger.rehydrate().catch((err) => {
+        rehydrated = false;
+        console.error("ledger rehydrate failed:", err.message);
+        return 0;
+    });
     console.log("");
     console.log(`  SecureDocs is running:  http://localhost:${PORT}`);
     console.log("");
@@ -130,20 +143,33 @@ app.listen(PORT, async () => {
     }
     if (n) console.log(`  rehydrated ${n} anchors`);
 
-    // After rehydrate, never before: on the stub ledger an anchor that
-    // has not been reloaded yet would look like a missing ledger record
-    // and raise a false tamper alert.
-    integrity.start();
-    console.log(
-        `Integrity check: every ${integrity.SWEEP_MINUTES} minutes on cases under investigation`
-    );
+    // After rehydrate, never before, and never at all if it failed: on
+    // the stub ledger an anchor that has not been reloaded looks like a
+    // missing ledger record, so sweeping now would alert every officer
+    // that every file in every case had been tampered with.
+    if (rehydrated) {
+        integrity.start();
+        console.log(
+            `Integrity check: every ${integrity.SWEEP_MINUTES} minutes on cases under investigation`
+        );
+    } else {
+        console.error(
+            "Integrity check: NOT started - the ledger could not be loaded, so a sweep " +
+            "could not tell tampering from a missing anchor. Restart once the ledger is reachable."
+        );
+    }
 
-    console.log(`SMS sign-in codes: ${sms.provider}`);
-    if (sms.provider === "console") {
+    console.log(`SMS sign-in codes: ${sms.provider || "NOT CONFIGURED"}`);
+    if (!sms.provider) {
+        console.log(
+            "  (set SMS_PROVIDER=console for development, or twilio for real SMS -" +
+            " until then no sign-in code can be sent)"
+        );
+    } else if (sms.provider === "console") {
         console.log(
             process.env.NODE_ENV === "production"
-                ? "  (console refuses in production - set SMS_PROVIDER, or OTP sign-in will not work)"
-                : "  (development - codes print in this terminal, set SMS_PROVIDER for real SMS)"
+                ? "  (console refuses in production - set SMS_PROVIDER=twilio, or sign-in will not work)"
+                : "  (development - codes print in this terminal, set SMS_PROVIDER=twilio for real SMS)"
         );
     }
 
