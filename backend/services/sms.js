@@ -10,11 +10,16 @@
 //                         a misconfigured deployment fails closed instead
 //                         of printing live codes into the host's logs.
 //
+// There is deliberately NO default. Defaulting to console meant a host
+// that never set NODE_ENV - a staging box, a plain `node server.js` -
+// printed live sign-in codes into its logs. Choosing where codes go is
+// now an explicit decision, and nothing is sent until it is made.
+//
 // Another provider (MSG91, Gupshup, AWS SNS) is one more function with
 // the same (to, body) shape.
 // ---------------------------------------------------------------
 
-const PROVIDER = process.env.SMS_PROVIDER || "console";
+const PROVIDER = process.env.SMS_PROVIDER || null;
 
 // Officers are registered with Indian numbers; a bare ten-digit number
 // is read as one. Anything else must already be full E.164.
@@ -61,6 +66,9 @@ async function consoleSms(to, body) {
 const providers = { twilio, console: consoleSms };
 
 async function send(to, body) {
+    if (!PROVIDER) {
+        throw new Error("SMS_PROVIDER is not set (use console in development)");
+    }
     const provider = providers[PROVIDER];
     if (!provider) throw new Error(`unknown SMS_PROVIDER "${PROVIDER}"`);
     return provider(to, body);

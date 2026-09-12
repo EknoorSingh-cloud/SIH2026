@@ -24,6 +24,9 @@ const OTP_TTL_MS = 5 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
 const OTP_RESEND_AFTER_S = 60;
 const OTP_PER_NUMBER_PER_15_MIN = 3;
+const MFA_MAX_ATTEMPTS = 5;
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Pending MFA challenges live in memory. They last five minutes and
 // losing them on restart is fine - the user just logs in again.
@@ -136,11 +139,27 @@ router.post("/otp/request", async (req, res, next) => {
                     detail: {
                         attempted: "login",
                         service_number,
-                        reason: passwordOk ? "mobile_mismatch" : "credentials",
+                        reason: !passwordOk
+                            ? "credentials"
+                            : user.mobile_number
+                              ? "mobile_mismatch"
+                              : "no_mobile_registered",
                     },
                     ip: req.ip,
                 })
                 .catch(() => {});
+
+            // Past a correct password there is nothing to protect by
+            // being vague, and "invalid credentials" for an account that
+            // simply has no number registered sends the officer hunting
+            // for a password that was never wrong.
+            if (passwordOk && !user.mobile_number) {
+                return res.status(409).json({
+                    error: "no_mobile_registered",
+                    message:
+                        "No mobile number is registered for this account, so no code can be sent. Ask your administrator to register one.",
+                });
+            }
 
             return res.status(401).json({
                 error: "unauthorized",
@@ -170,6 +189,14 @@ router.post("/otp/request", async (req, res, next) => {
             if (recent.rows[0].n >= OTP_PER_NUMBER_PER_15_MIN) {
                 return { limited: "Too many codes requested. Try again in 15 minutes." };
             }
+
+            // A fresh code retires every earlier one, so only the code
+            // just sent can ever be used.
+            await client.query(
+                `UPDATE otp_challenges SET expires_at = now()
+                  WHERE user_id = $1 AND verified_at IS NULL AND expires_at > now()`,
+                [user.id]
+            );
 
             const id = crypto.randomUUID();
             await client.query(
@@ -201,6 +228,10 @@ router.post("/otp/request", async (req, res, next) => {
         }
 
         return res.status(202).json({
+            // Identifies the code to verify against. Random per request
+            // and handed only to whoever passed the password, so nobody
+            // else can spend this officer's attempts on it.
+            otp_token: result.id,
             message: `A code has been sent to ${sms.maskMobile(mobile)}.`,
             expires_in: OTP_TTL_MS / 1000,
             resend_after: OTP_RESEND_AFTER_S,
@@ -212,27 +243,31 @@ router.post("/otp/request", async (req, res, next) => {
 
 // ---------------------------------------------------------------
 // POST /auth/otp/verify
-// Step 2. Exchanges the code for a session. A code only exists once
-// step 1 has checked the password, so the mobile number is enough to
-// find it here.
+// Step 2. Exchanges the code for a session.
+//
+// Keyed on the otp_token from step 1, not on the mobile number. Keyed
+// on the number, anyone who knew an officer's phone could spend that
+// officer's five attempts and lock out the code they were waiting for,
+// without knowing the password. The token is random per request and is
+// only ever handed to whoever passed the password.
 //
 // Every guess costs an attempt before it is checked, in one atomic
 // UPDATE, so parallel guesses cannot share an attempt. After
-// OTP_MAX_ATTEMPTS the challenge is dead even for the right code.
-// Only the newest challenge counts, and success stamps verified_at in
-// a statement that only one request can win, so a code works once.
+// OTP_MAX_ATTEMPTS the challenge is dead even for the right code, and
+// success stamps verified_at in a statement only one request can win,
+// so a code works once.
 //
-// Unknown number, wrong code, expired code, used code: one answer.
+// Unknown token, wrong code, expired code, used code: one answer.
 // ---------------------------------------------------------------
 router.post("/otp/verify", async (req, res, next) => {
-    const { mobile_number, otp } = req.body || {};
-    const mobile = sms.normalizeMobile(mobile_number);
+    const { otp_token, otp } = req.body || {};
+    const token = String(otp_token || "");
     const code = String(otp || "").trim();
 
-    if (!mobile || !/^\d{6}$/.test(code)) {
+    if (!UUID.test(token) || !/^\d{6}$/.test(code)) {
         return res.status(400).json({
             error: "bad_request",
-            message: "mobile_number and a 6-digit otp are required.",
+            message: "otp_token and a 6-digit otp are required.",
         });
     }
 
@@ -254,18 +289,15 @@ router.post("/otp/verify", async (req, res, next) => {
             `UPDATE otp_challenges c
                 SET attempts = c.attempts + 1
                FROM users u
-              WHERE u.mobile_number = $1
-                AND u.is_active
+              WHERE c.id = $1
                 AND c.user_id = u.id
-                AND c.id = (SELECT id FROM otp_challenges
-                             WHERE user_id = u.id
-                             ORDER BY created_at DESC LIMIT 1)
+                AND u.is_active
                 AND c.verified_at IS NULL
                 AND c.expires_at > now()
                 AND c.attempts < c.max_attempts
           RETURNING c.id, c.otp_hash, u.id AS user_id, u.name,
                     u.service_number, u.rank, u.station`,
-            [mobile]
+            [token]
         );
 
         const challenge = rows[0];
@@ -275,7 +307,7 @@ router.post("/otp/verify", async (req, res, next) => {
                 .append({
                     userId: challenge ? challenge.user_id : null,
                     action: "access_denied",
-                    detail: { attempted: "otp_login", mobile: sms.maskMobile(mobile) },
+                    detail: { attempted: "otp_login" },
                     ip: req.ip,
                 })
                 .catch(() => {});
@@ -362,6 +394,7 @@ router.post("/login", async (req, res, next) => {
         pendingMfa.set(mfaToken, {
             userId: user.id,
             expiresAt: Date.now() + MFA_WINDOW_MS,
+            attempts: 0,
         });
 
         return res.json({
@@ -406,17 +439,53 @@ router.post("/mfa/verify", async (req, res, next) => {
 
     try {
         const { rows } = await db.query(
-            `SELECT id, service_number, name, rank, station, mfa_secret, mfa_enabled
+            `SELECT id, service_number, name, rank, station, mfa_secret, mfa_enabled, is_active
          FROM users WHERE id = $1`,
             [pending.userId]
         );
         const user = rows[0];
 
-        if (user.mfa_enabled && !verifyTotp(user.mfa_secret, code)) {
+        // Re-checked here, not only at the password step: an account
+        // disabled or removed in between must not complete a sign-in.
+        if (!user || !user.is_active) {
+            pendingMfa.delete(mfa_token);
+            return res.status(401).json({
+                error: "unauthorized",
+                message: "Invalid credentials.",
+            });
+        }
+
+        // A second factor is not optional. Without this, an account with
+        // mfa_enabled = FALSE - the column default - took the password
+        // alone and skipped the code entirely, which is the whole point
+        // of both sign-in paths.
+        if (!user.mfa_enabled) {
+            pendingMfa.delete(mfa_token);
+            return res.status(409).json({
+                error: "mfa_not_enrolled",
+                message:
+                    "This account has no authenticator app enrolled. Sign in with your mobile number instead.",
+            });
+        }
+
+        if (!verifyTotp(user.mfa_secret, code)) {
             // The challenge is deliberately left alive so the officer can
             // simply read a fresh code and try again. Codes change every
             // thirty seconds and being typed a moment too late is by far
             // the most common reason to land here.
+            //
+            // Alive, but not forever: a challenge that accepted guesses
+            // for its whole five minutes let anyone holding the password
+            // brute-force a six-digit code.
+            pending.attempts += 1;
+            if (pending.attempts >= MFA_MAX_ATTEMPTS) {
+                pendingMfa.delete(mfa_token);
+                return res.status(401).json({
+                    error: "challenge_expired",
+                    message: "Too many incorrect codes. Enter your password again.",
+                });
+            }
+
             return res.status(401).json({
                 error: "invalid_code",
                 message:

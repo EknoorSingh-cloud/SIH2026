@@ -270,37 +270,94 @@ async function plantChallenge(code, { attempts = 0, expiresIn = "5 minutes" } = 
     return id;
 }
 
-const verifyOtp = (otp) =>
-    send(null, "POST", "/auth/otp/verify", { mobile_number: OTP_MOBILE, otp });
+// Verification is keyed on the token step 1 hands out, not on the
+// phone number, so each test verifies against its own challenge.
+const verifyOtp = (otp_token, otp) =>
+    send(null, "POST", "/auth/otp/verify", { otp_token, otp });
 
-// Four requests per run against a per-IP limit of ten per 15 minutes:
-// restart the server if you run this more than twice in that window.
+const askForCode = (body) => send(null, "POST", "/auth/otp/request", body);
+
+// Five requests per run against a per-IP limit of ten per 15 minutes.
+// A run that finds the limit already reached says so and skips rather
+// than reporting a failure that is not there.
 test("otp: a code is sent only when service number, password and mobile all match", async () => {
     const ask = (password, mobile_number) =>
-        send(null, "POST", "/auth/otp/request", {
-            service_number: OTP_OFFICER,
-            password,
-            mobile_number,
-        });
+        askForCode({ service_number: OTP_OFFICER, password, mobile_number });
 
     await db.query("DELETE FROM otp_challenges WHERE user_id = $1", [await userId(OTP_OFFICER)]);
 
     const wrongPassword = await ask("not-the-password", OTP_MOBILE);
+    if (wrongPassword.status === 429) {
+        console.log("        (per-IP code limit already reached, skipping - restart the server)");
+        return;
+    }
     const wrongPhone = await ask("Test@1234", "0000000005"); // another officer's number
     assert.strictEqual(wrongPassword.status, 401);
     assert.strictEqual(wrongPhone.status, 401);
     // Same answer, so the endpoint cannot confirm whose phone is whose.
     assert.deepStrictEqual(await wrongPassword.json(), await wrongPhone.json());
 
-    assert.strictEqual((await ask("Test@1234", OTP_MOBILE)).status, 202);
+    const sent = await ask("Test@1234", OTP_MOBILE);
+    assert.strictEqual(sent.status, 202);
+    const body = await sent.json();
+    assert.match(String(body.otp_token), /^[0-9a-f-]{36}$/, "no otp_token issued");
+    assert.ok(!JSON.stringify(body).match(/\d{6}/), "the response carries a six-digit code");
+
     assert.strictEqual(
         (await ask("Test@1234", OTP_MOBILE)).status, 429, "a second code within a minute was sent"
     );
 });
 
+test("otp: an account with no mobile number registered is told so, not 'invalid credentials'", async () => {
+    // The constable stands in for an officer who has never had a number
+    // registered. Put it back whatever happens.
+    const constable = await userId("DL-CON-3003");
+    const { rows } = await db.query("SELECT mobile_number FROM users WHERE id = $1", [constable]);
+    await db.query("UPDATE users SET mobile_number = NULL WHERE id = $1", [constable]);
+
+    let res;
+    try {
+        res = await askForCode({
+            service_number: "DL-CON-3003",
+            password: "Test@1234",
+            mobile_number: "0000000003",
+        });
+    } finally {
+        await db.query("UPDATE users SET mobile_number = $2 WHERE id = $1", [
+            constable, rows[0].mobile_number,
+        ]);
+    }
+
+    if (res.status === 429) {
+        console.log("        (per-IP code limit already reached, skipping)");
+        return;
+    }
+    assert.strictEqual(res.status, 409);
+    assert.strictEqual((await res.json()).error, "no_mobile_registered");
+});
+
+test("otp: a code cannot be attacked through the phone number alone", async () => {
+    // The officer's live code, as if they had just asked for one.
+    const token = await plantChallenge("505050");
+
+    // Someone who knows only the number has nothing to send: there is no
+    // way to name this challenge without the token from step 1.
+    const guess = await send(null, "POST", "/auth/otp/verify", {
+        mobile_number: OTP_MOBILE,
+        otp: "000000",
+    });
+    assert.strictEqual(guess.status, 400, "verify accepted a mobile number in place of a token");
+
+    const { rows } = await db.query("SELECT attempts FROM otp_challenges WHERE id = $1", [token]);
+    assert.strictEqual(rows[0].attempts, 0, "a stranger spent one of the officer's attempts");
+
+    // And the officer's own code still works.
+    assert.strictEqual((await verifyOtp(token, "505050")).status, 200);
+});
+
 test("otp: a wrong code is refused and costs an attempt", async () => {
     const id = await plantChallenge("314159");
-    const res = await verifyOtp("271828");
+    const res = await verifyOtp(id, "271828");
 
     assert.strictEqual(res.status, 401);
     assert.strictEqual((await res.json()).error, "invalid_code");
@@ -311,7 +368,7 @@ test("otp: a wrong code is refused and costs an attempt", async () => {
 test("otp: the right code signs in once, and only once", async () => {
     const id = await plantChallenge("161803");
 
-    const first = await verifyOtp("161803");
+    const first = await verifyOtp(id, "161803");
     assert.strictEqual(first.status, 200);
     const session = await first.json();
     assert.ok(session.session_token, "no session issued");
@@ -325,18 +382,99 @@ test("otp: the right code signs in once, and only once", async () => {
     );
     assert.ok(rows[0].verified_at, "challenge not marked used");
 
-    const replay = await verifyOtp("161803");
+    const replay = await verifyOtp(id, "161803");
     assert.strictEqual(replay.status, 401, "a used code signed in a second time");
 });
 
 test("otp: an exhausted challenge refuses even the right code", async () => {
-    await plantChallenge("141421", { attempts: 5 });
-    assert.strictEqual((await verifyOtp("141421")).status, 401);
+    const id = await plantChallenge("141421", { attempts: 5 });
+    assert.strictEqual((await verifyOtp(id, "141421")).status, 401);
 });
 
 test("otp: an expired challenge refuses the right code", async () => {
-    await plantChallenge("173205", { expiresIn: "-1 second" });
-    assert.strictEqual((await verifyOtp("173205")).status, 401);
+    const id = await plantChallenge("173205", { expiresIn: "-1 second" });
+    assert.strictEqual((await verifyOtp(id, "173205")).status, 401);
+});
+
+// ---- the password + authenticator path, which still exists ----
+
+test("legacy sign-in: an account with no authenticator enrolled cannot use the password path", async () => {
+    // mfa_enabled is FALSE by default, and without the check below the
+    // password alone bought a session on such an account.
+    const constable = await userId("DL-CON-3003");
+    await db.query("UPDATE users SET mfa_enabled = FALSE WHERE id = $1", [constable]);
+
+    try {
+        const login = await send(null, "POST", "/auth/login", {
+            service_number: "DL-CON-3003",
+            password: "Test@1234",
+        }).then((r) => r.json());
+        assert.ok(login.mfa_token, "no challenge issued");
+
+        const res = await send(null, "POST", "/auth/mfa/verify", {
+            mfa_token: login.mfa_token,
+            code: "000000",
+        });
+        assert.strictEqual(res.status, 409, "a session was issued without a second factor");
+        assert.strictEqual((await res.json()).error, "mfa_not_enrolled");
+    } finally {
+        await db.query("UPDATE users SET mfa_enabled = TRUE WHERE id = $1", [constable]);
+    }
+});
+
+test("legacy sign-in: the authenticator challenge dies after five wrong codes", async () => {
+    const login = await send(null, "POST", "/auth/login", {
+        service_number: "DL-CON-3003",
+        password: "Test@1234",
+    }).then((r) => r.json());
+
+    const guess = () =>
+        send(null, "POST", "/auth/mfa/verify", { mfa_token: login.mfa_token, code: "000000" });
+
+    for (let i = 0; i < 4; i++) {
+        assert.strictEqual((await guess().then((r) => r.json())).error, "invalid_code", `guess ${i + 1}`);
+    }
+    assert.strictEqual(
+        (await guess().then((r) => r.json())).error,
+        "challenge_expired",
+        "the challenge still accepted guesses after five tries"
+    );
+
+    // And it is gone: the right code no longer works on it either.
+    const { rows } = await db.query(
+        "SELECT mfa_secret FROM users WHERE service_number = 'DL-CON-3003'"
+    );
+    const res = await send(null, "POST", "/auth/mfa/verify", {
+        mfa_token: login.mfa_token,
+        code: totp(rows[0].mfa_secret),
+    });
+    assert.strictEqual(res.status, 401);
+});
+
+test("a case's sensitivity can be raised but never lowered", async () => {
+    const kase = await send(token, "POST", "/cases", {
+        case_number: `TEST/SENS/${Date.now()}`,
+        title: "Sensitivity ratchet test",
+    }).then((r) => r.json());
+
+    const set = (sensitivity) => send(token, "PATCH", `/cases/${kase.id}`, { sensitivity });
+
+    assert.strictEqual((await set("protected")).status, 200, "raising sensitivity was refused");
+
+    // Lowering it would switch redaction back off for every export.
+    const down = await set("normal");
+    assert.strictEqual(down.status, 403, "a protected case was downgraded");
+
+    const after = await get(token, `/cases/${kase.id}`).then((r) => r.json());
+    assert.strictEqual(after.sensitivity, "protected");
+
+    const trail = await get(token, `/cases/${kase.id}/audit`).then((r) => r.json());
+    assert.ok(
+        trail.entries.some(
+            (e) => e.action === "access_denied" && e.detail.attempted === "case.sensitivity_downgrade"
+        ),
+        "the refused downgrade is not in the case audit trail"
+    );
 });
 
 // ---- case lifecycle: every change lands in that case's audit trail ----

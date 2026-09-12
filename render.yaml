@@ -64,6 +64,25 @@ services:
       - key: LEDGER_BACKEND
         value: stub
 
+      # Render terminates TLS at one proxy in front of this process, so
+      # one X-Forwarded-For hop is trustworthy. Without this the app
+      # trusts no hop and rate-limits every request as one address.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+
+      # Sign-in codes need a real gateway. Set this and the Twilio
+      # credentials in the Render dashboard; until then, mobile sign-in
+      # cannot send a code. The console provider refuses in production
+      # rather than printing codes into the service log.
+      - key: SMS_PROVIDER
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM
+        sync: false
+
       - key: REDACTION_ENABLED
         value: "false"
 

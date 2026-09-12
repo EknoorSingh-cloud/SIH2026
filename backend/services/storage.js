@@ -155,6 +155,12 @@ async function store(plaintext) {
 async function retrieve(row) {
     const ciphertext = await getObject(row.storage_path);
 
+    // Outside the try: a missing or malformed MASTER_KEY is a
+    // configuration fault, and tagging it as an integrity failure would
+    // have the scheduled check report every document in the system as
+    // tampered with.
+    masterKey();
+
     try {
         const dek = unwrapKey(row.wrapped_key);
         const decipher = crypto.createDecipheriv("aes-256-gcm", dek, row.iv);

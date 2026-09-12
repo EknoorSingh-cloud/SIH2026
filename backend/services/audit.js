@@ -128,16 +128,37 @@ async function append(entry, client = null) {
 // session - which is simply normal use. That is a false alarm on the
 // one number the whole design rests on, so the filter is gone.
 //
-// ponytail: O(n) over every audit row. Fine at demo and station scale.
-// If the log grows into millions, verify from the last known-good
-// checkpoint forward rather than from genesis every time.
-async function verifyChain() {
-    const { rows } = await db.query("SELECT * FROM audit_log ORDER BY id ASC");
+// The result is cached briefly. Every case screen and every document
+// screen asks for it, and each case edit reloads the screen, so without
+// this a busy station rehashes the whole log several times a minute.
+// The window is short enough that a break still surfaces promptly.
+//
+// ponytail: still O(n) per check, just not per request. If the log
+// grows into millions, verify forward from a stored known-good
+// checkpoint instead of from genesis.
+const CACHE_MS = 30 * 1000;
+let cached = null;
+
+async function verifyChain({ force = false } = {}) {
+    if (!force && cached && Date.now() - cached.at < CACHE_MS) return cached.value;
+
+    // Named columns, not *: the log carries a detail blob per row and
+    // this reads every row in the table.
+    const { rows } = await db.query(
+        `SELECT id, user_id, action, document_id, case_id, version,
+                detail, occurred_at, prev_hash, entry_hash
+           FROM audit_log ORDER BY id ASC`
+    );
+
+    const remember = (value) => {
+        cached = { at: Date.now(), value };
+        return value;
+    };
 
     let prevHash = GENESIS;
     for (const row of rows) {
         if (row.prev_hash !== prevHash) {
-            return { intact: false, brokenAt: row.id };
+            return remember({ intact: false, brokenAt: row.id });
         }
         const payload = [
             row.prev_hash,
@@ -151,11 +172,11 @@ async function verifyChain() {
         ].join("|");
 
         if (sha256(payload) !== row.entry_hash) {
-            return { intact: false, brokenAt: row.id };
+            return remember({ intact: false, brokenAt: row.id });
         }
         prevHash = row.entry_hash;
     }
-    return { intact: true, brokenAt: null };
+    return remember({ intact: true, brokenAt: null });
 }
 
 module.exports = { append, verifyChain, canonicalJson, GENESIS };
