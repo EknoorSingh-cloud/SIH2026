@@ -10,3 +10,16 @@ uploads/
 
 # Scratch space for local experiments
 backend/.scratch/
+
+# Word's lock files, left behind while a .doc/.docx is open
+~$*
+
+# Editor settings for the repository root
+/.idea/
+
+# Claude Code's local settings, including the preview launch config
+.claude/
+
+# A separate project that happens to sit in this folder on one machine:
+# 219 MB with its own .git, and no part of this repository.
+/SIH2026/
