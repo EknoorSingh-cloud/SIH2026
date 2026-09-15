@@ -1,0 +1,31 @@
+# Whole stack: KMS/HSM sim + the document API. Frontend is index.html — open it in
+# a browser and point it at http://localhost:8000 (CORS is open for dev).
+#
+#   KMS_KEK           base64 of 32 bytes; omit for an ephemeral dev key (data won't
+#                     survive a kms restart). Generate one:
+#                       python -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"
+#   ANTHROPIC_API_KEY needed only for the /ask (AI) endpoint.
+services:
+  kms:
+    build: .
+    command: uvicorn kms_service:app --host 0.0.0.0 --port 9000
+    environment:
+      KMS_KEK: ${KMS_KEK:-}
+    expose: ["9000"]                       # internal only — the KEK never leaves this net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request;urllib.request.urlopen('http://localhost:9000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    command: uvicorn docsvc:app --host 0.0.0.0 --port 8000
+    environment:
+      KMS_URL: http://kms:9000
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports: ["8000:8000"]
+    depends_on:
+      kms:
+        condition: service_healthy
