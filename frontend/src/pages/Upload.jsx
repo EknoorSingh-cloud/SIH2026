@@ -1,187 +1,174 @@
-import { useState } from "react";
-import Sidebar from "../components/Sidebar";
-import { UploadCloud, FileText, X, CheckCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { UploadCloud, ShieldAlert } from "lucide-react";
 
-function Upload() {
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [dragActive, setDragActive] = useState(false);
-  const [title, setTitle] = useState("");
-  const [category, setCategory] = useState("Legal");
-  const [customCategory, setCustomCategory] = useState("");
+import * as api from "../api/client";
 
-  const handleFile = (file) => {
-    if (file) {
-      setSelectedFile(file);
+// ---------------------------------------------------------------
+// Upload into any case you are assigned to, without going through the
+// case first. The case list is the same assignment-scoped one used
+// everywhere, so this cannot be used to file into a case you are not
+// on - the picker simply will not contain it.
+// ---------------------------------------------------------------
+
+const DOC_TYPES = [
+    "fir",
+    "statement",
+    "forensic_report",
+    "charge_sheet",
+    "court_filing",
+    "notice",
+    "other",
+];
+
+export default function Upload() {
+    const navigate = useNavigate();
+
+    const [cases, setCases] = useState([]);
+    const [caseId, setCaseId] = useState("");
+    const [title, setTitle] = useState("");
+    const [docType, setDocType] = useState("fir");
+    const [file, setFile] = useState(null);
+
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState(null);
+    const [done, setDone] = useState(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        api.listCases()
+            .then((r) => {
+                if (cancelled) return;
+                setCases(r.items || []);
+                if (r.items && r.items.length === 1) setCaseId(r.items[0].id);
+            })
+            .catch((err) => {
+                if (!cancelled) setError(err.message);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const selected = cases.find((c) => c.id === caseId);
+
+    async function submit(e) {
+        e.preventDefault();
+        if (!caseId || !file) return;
+
+        setBusy(true);
+        setError(null);
+        setDone(null);
+        try {
+            const res = await api.uploadDocument({
+                caseId,
+                title: title.trim(),
+                docType,
+                file,
+            });
+            setDone(res);
+            setTitle("");
+            setFile(null);
+            e.target.reset();
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setBusy(false);
+        }
     }
-  };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setDragActive(false);
+    return (
+        <div>
+            <div className="page-header">
+                <h1>Upload a document</h1>
+                <p>Its fingerprint is taken before anything is stored</p>
+            </div>
 
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
-    }
-  };
+            {error && <div className="alert alert-error">{error}</div>}
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-
-    if (!selectedFile) {
-      alert("Please select a document first.");
-      return;
-    }
-
-    const finalCategory =
-  category === "Other" ? customCategory : category;
-
-alert(
-  `${selectedFile.name} uploaded successfully!\nCategory: ${finalCategory}`
-);
-
-    setSelectedFile(null);
-    setTitle("");
-  };
-
-  return (
-    <div className="app-layout">
-      <Sidebar />
-
-      <main className="main-content">
-        <div className="page-header">
-          <div>
-            <h1>Upload Document</h1>
-            <p>Upload and securely store your important documents.</p>
-          </div>
-        </div>
-
-        <div className="upload-page-grid">
-          <form className="upload-card" onSubmit={handleSubmit}>
-            <div
-              className={`drop-zone ${dragActive ? "drag-active" : ""}`}
-              onDragEnter={(e) => {
-                e.preventDefault();
-                setDragActive(true);
-              }}
-              onDragOver={(e) => e.preventDefault()}
-              onDragLeave={() => setDragActive(false)}
-              onDrop={handleDrop}
-            >
-              <input
-                id="file-upload"
-                type="file"
-                hidden
-                accept=".pdf,.doc,.docx,.txt"
-                onChange={(e) => handleFile(e.target.files[0])}
-              />
-
-              {!selectedFile ? (
-                <>
-                  <div className="upload-icon">
-                    <UploadCloud size={35} />
-                  </div>
-
-                  <h3>Drag & drop your document here</h3>
-
-                  <p>or</p>
-
-                  <label htmlFor="file-upload" className="browse-button">
-                    Browse Files
-                  </label>
-
-                  <span>Supported: PDF, DOC, DOCX, TXT</span>
-                </>
-              ) : (
-                <div className="selected-file">
-                  <div className="selected-file-icon">
-                    <FileText size={30} />
-                  </div>
-
-                  <div className="selected-file-info">
-                    <h4>{selectedFile.name}</h4>
-                    <p>
-                      {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-                    </p>
-                  </div>
-
-                  <button
-                    type="button"
-                    className="remove-file"
-                    onClick={() => setSelectedFile(null)}
-                  >
-                    <X size={20} />
-                  </button>
+            {done && (
+                <div className="alert alert-ok">
+                    Uploaded. The fingerprint is being recorded on the ledger and the
+                    text reader will pick it up shortly.{" "}
+                    <button
+                        type="button"
+                        className="link-button"
+                        onClick={() => navigate(`/documents/${done.document_id}`)}
+                    >
+                        Open it
+                    </button>
                 </div>
-              )}
-            </div>
+            )}
 
-            <div className="form-group">
-              <label>Document Title</label>
+            <section className="panel">
+                <form onSubmit={submit} className="upload-form">
+                    <div className="input-group">
+                        <label>Case</label>
+                        <select
+                            value={caseId}
+                            onChange={(e) => setCaseId(e.target.value)}
+                            required
+                        >
+                            <option value="">Choose a case...</option>
+                            {cases.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                    {c.case_number} - {c.title}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
 
-              <input
-                type="text"
-                placeholder="Enter document title"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                required
-              />
-            </div>
+                    {selected && selected.sensitivity === "protected" && (
+                        <div className="alert alert-warn">
+                            <ShieldAlert size={14} /> This case is protected. Anything
+                            released from it has identities removed first - and register
+                            the victim on the case rather than relying on automatic
+                            detection.
+                        </div>
+                    )}
 
-            <div className="form-group">
-  <label>Category</label>
+                    <div className="input-group">
+                        <label>Description (optional)</label>
+                        <input
+                            value={title}
+                            onChange={(e) => setTitle(e.target.value)}
+                            placeholder="The evidence number is assigned automatically"
+                        />
+                    </div>
 
-  <select
-    value={category}
-    onChange={(e) => setCategory(e.target.value)}
-  >
-    <option value="Legal">Legal</option>
-    <option value="Contracts">Contracts</option>
-    <option value="Financial">Financial</option>
-    <option value="Personal">Personal</option>
-    <option value="Other">Other</option>
-  </select>
-</div>
+                    <div className="input-group">
+                        <label>Type</label>
+                        <select value={docType} onChange={(e) => setDocType(e.target.value)}>
+                            {DOC_TYPES.map((t) => (
+                                <option key={t} value={t}>
+                                    {t.replace(/_/g, " ")}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
 
-{category === "Other" && (
-  <div className="form-group">
-    <label>Specify Category</label>
+                    <div className="input-group">
+                        <label>File</label>
+                        <input
+                            type="file"
+                            onChange={(e) => setFile(e.target.files[0] || null)}
+                            required
+                        />
+                        <p className="muted">
+                            Up to 25 MB. Images and PDFs are read automatically so their
+                            contents become searchable.
+                        </p>
+                    </div>
 
-    <input
-      type="text"
-      placeholder="Enter your category"
-      value={customCategory}
-      onChange={(e) => setCustomCategory(e.target.value)}
-      required
-    />
-  </div>
-)}
-
-            <button type="submit" className="primary-button upload-submit">
-              <UploadCloud size={18} />
-              Upload Securely
-            </button>
-          </form>
-
-          <div className="upload-info-card">
-            <CheckCircle size={30} />
-
-            <h2>Secure Upload</h2>
-
-            <p>
-              Your documents are securely stored and protected using
-              access controls.
-            </p>
-
-            <div className="upload-info-list">
-              <div>🔐 Secure Storage</div>
-              <div>🛡️ Access Control</div>
-              <div>📁 Easy Management</div>
-            </div>
-          </div>
+                    <button
+                        type="submit"
+                        className="btn"
+                        disabled={busy || !file || !caseId}
+                    >
+                        <UploadCloud size={15} /> {busy ? "Uploading..." : "Upload"}
+                    </button>
+                </form>
+            </section>
         </div>
-      </main>
-    </div>
-  );
+    );
 }
-
-export default Upload;

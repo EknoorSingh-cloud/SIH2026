@@ -1,161 +1,152 @@
-import { useState } from "react";
-import Sidebar from "../components/Sidebar";
-import {
-  FileText,
-  Search,
-  Download,
-  Trash2,
-  Eye,
-  Filter,
-} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { ShieldAlert } from "lucide-react";
 
-function Documents() {
-  const [searchTerm, setSearchTerm] = useState("");
+import * as api from "../api/client";
 
-  const documents = [
-    {
-      id: 1,
-      name: "Legal_Contract.pdf",
-      type: "PDF",
-      size: "2.4 MB",
-      uploadedBy: "Admin",
-      date: "Sep 4, 2026",
-    },
-    {
-      id: 2,
-      name: "Client_Agreement.pdf",
-      type: "PDF",
-      size: "1.8 MB",
-      uploadedBy: "John Smith",
-      date: "Sep 3, 2026",
-    },
-    {
-      id: 3,
-      name: "Case_Document.docx",
-      type: "DOCX",
-      size: "856 KB",
-      uploadedBy: "Admin",
-      date: "Sep 2, 2026",
-    },
-    {
-      id: 4,
-      name: "Financial_Report.pdf",
-      type: "PDF",
-      size: "3.2 MB",
-      uploadedBy: "Sarah Johnson",
-      date: "Sep 1, 2026",
-    },
-  ];
+// ---------------------------------------------------------------
+// Every document this officer can open, across all their cases.
+//
+// The filter is client-side on purpose: this list is already limited
+// to one officer's cases by the server, so it is small, and filtering
+// here keeps it instant. If a station ever has enough documents for
+// that to stop being true, move the filter into the query rather than
+// paging blindly.
+// ---------------------------------------------------------------
 
-  const filteredDocuments = documents.filter((document) =>
-    document.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+const TYPES = [
+    "fir",
+    "statement",
+    "forensic_report",
+    "charge_sheet",
+    "court_filing",
+    "notice",
+    "other",
+];
 
-  return (
-    <div className="app-layout">
-      <Sidebar />
+export default function Documents() {
+    const [docs, setDocs] = useState([]);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [type, setType] = useState("");
+    const [term, setTerm] = useState("");
 
-      <main className="main-content">
-        <div className="page-header">
-          <div>
-            <h1>Documents</h1>
-            <p>Manage and access all your secure documents.</p>
-          </div>
+    useEffect(() => {
+        let cancelled = false;
 
-          <button className="primary-button">
-            + Upload Document
-          </button>
-        </div>
+        api.listDocuments()
+            .then((r) => {
+                if (!cancelled) setDocs(r.items || []);
+            })
+            .catch((err) => {
+                if (!cancelled) setError(err.message);
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
 
-        <div className="documents-toolbar">
-          <div className="search-box">
-            <Search size={20} />
-            <input
-              type="text"
-              placeholder="Search documents..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
-          <button className="filter-button">
-            <Filter size={18} />
-            Filter
-          </button>
-        </div>
+    const shown = useMemo(() => {
+        const needle = term.trim().toLowerCase();
+        return docs.filter(
+            (d) =>
+                (!type || d.doc_type === type) &&
+                (!needle ||
+                    d.title.toLowerCase().includes(needle) ||
+                    d.case_number.toLowerCase().includes(needle))
+        );
+    }, [docs, type, term]);
 
-        <div className="documents-table-container">
-          <table className="documents-table">
-            <thead>
-              <tr>
-                <th>Document</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Uploaded By</th>
-                <th>Date</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
+    if (loading) return <div className="page-loading">Loading documents...</div>;
 
-            <tbody>
-              {filteredDocuments.map((document) => (
-                <tr key={document.id}>
-                  <td>
-                    <div className="table-document">
-                      <div className="file-icon">
-                        <FileText size={20} />
-                      </div>
-
-                      <span>{document.name}</span>
-                    </div>
-                  </td>
-
-                  <td>
-                    <span className="document-badge">
-                      {document.type}
-                    </span>
-                  </td>
-
-                  <td>{document.size}</td>
-
-                  <td>{document.uploadedBy}</td>
-
-                  <td>{document.date}</td>
-
-                  <td>
-                    <div className="action-buttons">
-                      <button title="View">
-                        <Eye size={18} />
-                      </button>
-
-                      <button title="Download">
-                        <Download size={18} />
-                      </button>
-
-                      <button
-                        className="delete-button"
-                        title="Delete"
-                      >
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          {filteredDocuments.length === 0 && (
-            <div className="empty-state">
-              <FileText size={45} />
-              <h3>No documents found</h3>
-              <p>Try searching for something else.</p>
+    return (
+        <div>
+            <div className="page-header">
+                <h1>Documents</h1>
+                <p>
+                    {docs.length} document{docs.length === 1 ? "" : "s"} across the cases
+                    you are assigned to
+                </p>
             </div>
-          )}
-        </div>
-      </main>
-    </div>
-  );
-}
 
-export default Documents;
+            {error && <div className="alert alert-error">{error}</div>}
+
+            <section className="panel">
+                <div className="inline-form">
+                    <input
+                        value={term}
+                        onChange={(e) => setTerm(e.target.value)}
+                        placeholder="Filter by title or case number"
+                    />
+                    <select value={type} onChange={(e) => setType(e.target.value)}>
+                        <option value="">All types</option>
+                        {TYPES.map((t) => (
+                            <option key={t} value={t}>
+                                {t.replace(/_/g, " ")}
+                            </option>
+                        ))}
+                    </select>
+                </div>
+
+                <p className="muted">
+                    This filters titles and case numbers. To search inside the documents
+                    themselves, use <Link to="/search">Search</Link>.
+                </p>
+
+                {shown.length === 0 ? (
+                    <p className="muted">
+                        {docs.length === 0
+                            ? "No documents in your cases yet."
+                            : "Nothing matches that filter."}
+                    </p>
+                ) : (
+                    <table className="data-table">
+                        <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Case</th>
+                            <th>Type</th>
+                            <th>Ver</th>
+                            <th>Ledger</th>
+                            <th>Text</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {shown.map((d) => (
+                            <tr key={d.id}>
+                                <td>
+                                    <Link to={`/documents/${d.id}`}>{d.title}</Link>
+                                    {d.sensitivity === "protected" && (
+                                        <span className="badge badge-protected">
+                                            <ShieldAlert size={12} /> Protected
+                                        </span>
+                                    )}
+                                </td>
+                                <td>
+                                    <Link to={`/cases/${d.case_id}`}>{d.case_number}</Link>
+                                </td>
+                                <td>{String(d.doc_type).replace(/_/g, " ")}</td>
+                                <td>{d.current_version}</td>
+                                <td>
+                                    <span className={`status status-${d.anchor_status}`}>
+                                        {d.anchor_status}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span className={`status status-${d.ocr_status}`}>
+                                        {d.ocr_status}
+                                    </span>
+                                </td>
+                            </tr>
+                        ))}
+                        </tbody>
+                    </table>
+                )}
+            </section>
+        </div>
+    );
+}
