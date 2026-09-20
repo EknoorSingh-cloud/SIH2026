@@ -301,7 +301,17 @@ test("otp: a code is sent only when service number, password and mobile all matc
     assert.strictEqual(sent.status, 202);
     const body = await sent.json();
     assert.match(String(body.otp_token), /^[0-9a-f-]{36}$/, "no otp_token issued");
-    assert.ok(!JSON.stringify(body).match(/\d{6}/), "the response carries a six-digit code");
+    // The code itself must never come back over the wire. Checked field
+    // by field: a random token can contain six digits in a row by
+    // chance, which made scanning the whole body a coin toss.
+    assert.deepStrictEqual(
+        Object.keys(body).sort(),
+        ["expires_in", "message", "otp_token", "resend_after"]
+    );
+    assert.ok(
+        !Object.values(body).some((v) => /^\d{6}$/.test(String(v))),
+        "the response carries a six-digit code"
+    );
 
     assert.strictEqual(
         (await ask("Test@1234", OTP_MOBILE)).status, 429, "a second code within a minute was sent"
